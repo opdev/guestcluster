@@ -1,0 +1,5 @@
+# Config for `make api-docs`.
+#
+# See https://github.com/elastic/crd-ref-docs#configuration
+render:
+  kubernetesVersion: "1.33"
