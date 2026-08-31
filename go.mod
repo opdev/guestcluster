@@ -7,9 +7,9 @@ require (
 	github.com/onsi/gomega v1.39.0
 	github.com/openshift/hypershift/api v0.0.0-20260817182709-8115aaf37105
 	golang.org/x/crypto v0.55.0
-	k8s.io/api v0.36.3
-	k8s.io/apimachinery v0.36.3
-	k8s.io/client-go v0.36.3
+	k8s.io/api v0.36.4
+	k8s.io/apimachinery v0.36.4
+	k8s.io/client-go v0.36.4
 	kubevirt.io/api v1.9.0
 	kubevirt.io/containerized-data-importer-api v1.66.0
 	sigs.k8s.io/controller-runtime v0.24.1
@@ -105,7 +105,7 @@ require (
 	k8s.io/component-base v0.36.3 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260519202549-bbf5c5577288 // indirect
-	k8s.io/streaming v0.36.3 // indirect
+	k8s.io/streaming v0.36.4 // indirect
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5 // indirect
 	kubevirt.io/controller-lifecycle-operator-sdk/api v0.2.4 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 // indirect
