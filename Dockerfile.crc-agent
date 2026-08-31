@@ -1,0 +1,96 @@
+# Dockerfile.crc-agent
+#
+# Builds the crc-agent binary and packages it together with the third-party
+# CLI tools it (and the CRCBundle "bundle-prep" Job, which intentionally
+# reuses this SAME image, see internal/controller/crcbundle_controller.go's
+# bundlePrepImage()) shell out to at runtime:
+#
+#   - crc-agent itself drives the post-boot fixups (start kubelet, swap SSH
+#     keys, regenerate the admin CA/client cert, approve CSRs, inject the
+#     pull secret, rewrite the kubeconfig to the externally-routable API
+#     Route hostname the ClusterInstance controller provisions)
+#     natively in Go over SSH and typed OpenShift/Kubernetes clients against
+#     a freshly booted CRC bundle VM. See cmd/crc-agent/main.go. There is no
+#     longer any dependency on the unmaintained crc-cloud binary or on
+#     Pulumi: crc-agent only shells out to `oc` for the one CA-regen step
+#     that must run on the guest itself (see cmd/crc-agent/guest.go).
+#   - oc (the OpenShift CLI) is used on the guest VM over SSH for that one
+#     bootstrap step, and by the bundle-prep script (see below).
+#   - curl / tar (with zstd support) / jq / sha256sum / sed run the
+#     bundle-prep shell script embedded in internal/resources/bundleprep.go
+#     when this image is reused for the one-time-per-version CRCBundle
+#     download+verify+extract Job.
+#
+# This image is intentionally dual-purpose: the crc-agent Job runs it with
+# the default ENTRYPOINT below, while the bundle-prep Job overrides
+# command/args (see BuildBundlePrepJob) to invoke its own shell script
+# instead. Both need the same toolset, so one image is built and shared
+# rather than maintaining two nearly-identical images.
+#
+# Build:
+#   make docker-build-crc-agent
+# or directly:
+#   docker build -f Dockerfile.crc-agent -t <tag> .
+#
+# KNOWN LIMITATIONS (see README "Known limitations"):
+#   - the oc CLI is fetched from the "stable-4" mirror channel at image-build
+#     time, not pinned to any particular bundle's exact OCP version. This is
+#     expected to remain compatible for the simple `oc get clusterversion`/
+#     `oc apply`/`oc patch` operations this image performs, but is not
+#     guaranteed across all future OCP version skew.
+
+########## Stage 1: build the crc-agent Go binary ##########
+FROM golang:1.26 AS crc-agent-builder
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY cmd/crc-agent/ cmd/crc-agent/
+COPY api/ api/
+COPY internal/ internal/
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -a -o /out/crc-agent ./cmd/crc-agent
+
+########## Stage 2: runtime image ##########
+# Not distroless: this image needs a package manager to install curl, tar
+# (with zstd support), jq, openssh-clients, and qemu-img on top of a small
+# base. ubi9-minimal was tried first but its default repos do NOT carry
+# qemu-img (it lives in a virtualization module/channel not exposed via the
+# public UBI repos without a subscription entitlement). quay.io/centos/centos
+# :stream9 is a freely-pullable, ABI-compatible rebuild of the same content
+# that DOES carry qemu-img in its AppStream repo, and ships full `dnf`
+# (supporting --allowerasing) instead of `microdnf`, avoiding the earlier
+# curl-minimal/coreutils-single package-conflict workaround entirely.
+FROM quay.io/centos/centos:stream9
+ARG TARGETARCH
+ARG OC_CHANNEL=stable
+
+RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
+        curl \
+        tar \
+        zstd \
+        jq \
+        sed \
+        coreutils \
+        openssh-clients \
+        qemu-img \
+    && dnf clean all
+
+# Fetch the oc CLI matching the requested TARGETARCH (amd64|arm64). See the
+# "KNOWN LIMITATIONS" note above regarding version pinning.
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) OC_TARBALL="openshift-client-linux.tar.gz" ;; \
+        arm64) OC_TARBALL="openshift-client-linux-arm64.tar.gz" ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OC_CHANNEL}/${OC_TARBALL}" \
+        -o /tmp/oc.tar.gz; \
+    tar -xzf /tmp/oc.tar.gz -C /usr/local/bin oc; \
+    rm -f /tmp/oc.tar.gz; \
+    chmod +x /usr/local/bin/oc
+
+COPY --from=crc-agent-builder /out/crc-agent /usr/local/bin/crc-agent
+
+ENTRYPOINT ["/usr/local/bin/crc-agent"]
