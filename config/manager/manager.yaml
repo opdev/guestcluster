@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: guestcluster-operator
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+        app.kubernetes.io/name: guestcluster-operator
+    spec:
+      # TODO(user): Uncomment the following code to configure the nodeAffinity expression
+      # according to the platforms which are supported by your solution.
+      # It is considered best practice to support multiple architectures. You can
+      # build your manager image using the makefile target docker-buildx.
+      # affinity:
+      #   nodeAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       nodeSelectorTerms:
+      #         - matchExpressions:
+      #           - key: kubernetes.io/arch
+      #             operator: In
+      #             values:
+      #               - amd64
+      #               - arm64
+      #               - ppc64le
+      #               - s390x
+      #           - key: kubernetes.io/os
+      #             operator: In
+      #             values:
+      #               - linux
+      securityContext:
+        # Projects are configured by default to adhere to the "restricted" Pod Security Standards.
+        # This ensures that deployments meet the highest security requirements for Kubernetes.
+        # For more details, see: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /manager
+        args:
+          - --leader-elect
+          - --health-probe-bind-address=:8081
+        image: controller:latest
+        name: manager
+        env:
+          # Used to place shared, cross-namespace objects (the CRCBundle
+          # golden PVC, its derived SSH-key Secret, and its bundle-prep Job)
+          # -- see internal/resources.OperatorNamespace.
+          - name: OPERATOR_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          # Automatically set, at kustomize build time, to the actual (post
+          # namePrefix) name of the bundle-prep ServiceAccount via the
+          # `replacements` entries in config/default/kustomization.yaml. See
+          # internal/resources.BundlePrepServiceAccountEnvVar. The values
+          # below are placeholders overwritten by that replacement; do not
+          # edit them by hand.
+          - name: BUNDLE_PREP_SERVICE_ACCOUNT
+            value: bundle-prep
+          # Same mechanism, for the crc-agent Job's ServiceAccount. See
+          # internal/resources.CRCAgentServiceAccountEnvVar.
+          - name: CRC_AGENT_SERVICE_ACCOUNT
+            value: crc-agent
+          # TODO(user): set this to your built/pushed crc-agent image. It is
+          # used for both the per-instance crc-agent Job (topology=crc) and
+          # the CRCBundle bundle-prep Job, which reuses the same image (see
+          # internal/resources.DefaultCRCAgentImage/CRCAgentImageEnvVar).
+          # - name: CRC_AGENT_IMAGE
+          #   value: <registry>/guestcluster-operator-crc-agent:tag
+        ports: []
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        # TODO(user): Configure the resources accordingly based on the project requirements.
+        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts: []
+      volumes: []
+      serviceAccountName: controller-manager
+      terminationGracePeriodSeconds: 10

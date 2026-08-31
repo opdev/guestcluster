@@ -1,0 +1,12 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterLease
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: ci-job-1234-lease
+spec:
+  poolRef:
+    name: crc-pool
+  ttl: 2h
+  requestedBy: "ci-job-1234"

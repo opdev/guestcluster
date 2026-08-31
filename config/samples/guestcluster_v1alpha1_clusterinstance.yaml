@@ -1,0 +1,32 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: crc-standalone-sample
+spec:
+  type: crc
+  poolRef:
+    name: crc-pool
+  template:
+    # Turnkey path (recommended): see broker_v1alpha1_crcbundle.yaml and the
+    # crcVersion field on broker_v1alpha1_clusterpool.yaml. Standalone
+    # ClusterInstances (not created via a ClusterPool) can use it too, but a
+    # matching CRCBundle must already exist (or be created by some pool)
+    # since ClusterInstance itself never auto-creates one.
+    crcVersion: "4.16.0"
+    # Manual fallback: releaseImage (extracted crc.qcow2 URL) + bundleSSHKeyRef
+    # (Secret with the bundle's id_ecdsa_crc key). Ignored when crcVersion is set.
+    # releaseImage: "https://mirror.example.com/crc/crc_libvirt_4.16.0_amd64.qcow2"
+    # bundleSSHKeyRef:
+    #   name: crc-bundle-ssh-key
+    ocpVersion: "4.16.0"
+    memory: "16Gi"
+    cores: 4
+    rootVolumeSize: "80Gi"
+    # Optional: defaults to a copy of the management cluster's own global
+    # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
+    # to override, e.g. for a disconnected/mirrored registry.
+    pullSecretRef:
+      name: crc-pull-secret

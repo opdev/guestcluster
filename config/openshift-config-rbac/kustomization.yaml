@@ -1,0 +1,12 @@
+# This is a deliberately SEPARATE kustomize root from config/default: that
+# tree applies a `namespace:` transform (see config/default/kustomization.yaml)
+# to every resource it includes, which would force these objects into the
+# operator's own namespace instead of "openshift-config" -- where they must
+# live to grant the operator read access to the management cluster's own
+# global pull secret (see ClusterInstanceReconciler.resolvePullSecret).
+#
+# Applied/removed as an independent kustomize build+apply step by
+# `make deploy` / `make undeploy`.
+resources:
+- role.yaml
+- role_binding.yaml
