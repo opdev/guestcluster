@@ -1,0 +1,47 @@
+resources:
+# All RBAC will be applied under this service account in
+# the deployment namespace. You may comment out this resource
+# if your manager will use a service account that exists at
+# runtime. Be sure to update RoleBinding and ClusterRoleBinding
+# subjects if changing service account names.
+- service_account.yaml
+- role.yaml
+- role_binding.yaml
+- leader_election_role.yaml
+- leader_election_role_binding.yaml
+# crc-agent is the ServiceAccount used by the per-ClusterInstance crc-agent Jobs
+# (topology=crc only, see internal/resources.BuildCRCAgentJob); it needs only
+# namespace-scoped secrets access (to publish/update the raw kubeconfig Secret).
+- crc_agent_service_account.yaml
+- crc_agent_role.yaml
+- crc_agent_role_binding.yaml
+# bundle-prep is the ServiceAccount used by the one-time-per-version CRCBundle
+# bundle-prep Job (see internal/resources.BuildBundlePrepJob); it needs
+# namespace-scoped secrets+configmaps access to publish the extracted SSH key
+# and bundle metadata once the download/verify/extract steps complete.
+- bundle_prep_service_account.yaml
+- bundle_prep_role.yaml
+- bundle_prep_role_binding.yaml
+# The following RBAC configurations are used to protect
+# the metrics endpoint with authn/authz. These configurations
+# ensure that only authorized users and service accounts
+# can access the metrics endpoint. Comment the following
+# permissions if you want to disable this protection.
+# More info: https://book.kubebuilder.io/reference/metrics.html
+- metrics_auth_role.yaml
+- metrics_auth_role_binding.yaml
+- metrics_reader_role.yaml
+# For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
+# default, aiding admins in cluster management. Those roles are
+# not used by the guestcluster-operator itself. You can comment the following lines
+# if you do not want those helpers be installed with your Project.
+- clusterlease_admin_role.yaml
+- clusterlease_editor_role.yaml
+- clusterlease_viewer_role.yaml
+- clusterinstance_admin_role.yaml
+- clusterinstance_editor_role.yaml
+- clusterinstance_viewer_role.yaml
+- clusterpool_admin_role.yaml
+- clusterpool_editor_role.yaml
+- clusterpool_viewer_role.yaml
+

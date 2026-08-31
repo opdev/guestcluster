@@ -1,0 +1,234 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: crcbundles.guestcluster.opdev.io
+spec:
+  group: guestcluster.opdev.io
+  names:
+    kind: CRCBundle
+    listKind: CRCBundleList
+    plural: crcbundles
+    shortNames:
+    - crcb
+    singular: crcbundle
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .spec.arch
+      name: Arch
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.ocpVersion
+      name: OCPVersion
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CRCBundle is the Schema for the crcbundles API. It is cluster-scoped and
+          version-keyed (see internal/resources.CRCBundleName) so that a version is
+          downloaded and extracted at most once and shared by every ClusterPool /
+          ClusterInstance across all namespaces that reference it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CRCBundleSpec defines the desired state of a cached, version-keyed CRC bundle.
+
+              A CRCBundle is the turnkey alternative to manually extracting a .crcbundle and
+              hosting crc.qcow2/id_ecdsa_crc yourself: the admin specifies only a version (and,
+              on the ClusterPool/ClusterInstance referencing it, a pull secret for runtime
+              injection), and the CRCBundleReconciler downloads the official bundle from the
+              OpenShift mirror, verifies its checksum, extracts it, and caches the resulting
+              crc.qcow2 disk image in a golden PersistentVolumeClaim (plus the bundle's SSH
+              private key in a derived Secret) that any number of ClusterPools/ClusterInstances,
+              in any namespace, can clone from via CDI's cross-namespace PVC clone support.
+            properties:
+              arch:
+                default: amd64
+                description: Arch is the CPU architecture of the bundle to fetch.
+                enum:
+                - amd64
+                - arm64
+                type: string
+              bundleURL:
+                description: |-
+                  BundleURL optionally overrides the deterministic official mirror URL
+                  (https://mirror.openshift.com/pub/openshift-v4/clients/crc/bundles/openshift/<version>/crc_libvirt_<version>_<arch>.crcbundle),
+                  which is derived from Version/Arch when this is left empty.
+                type: string
+              goldenVolumeSize:
+                default: 35Gi
+                description: |-
+                  GoldenVolumeSize is the size of the golden PVC that stores the extracted
+                  crc.qcow2. Defaults to 35Gi (CRC bundle disks are typically ~31Gi).
+                type: string
+              sha256URL:
+                description: |-
+                  SHA256URL optionally overrides the deterministic mirror checksum URL (the
+                  sha256sum.txt published alongside the bundle) used to verify the download.
+                  Derived from Version/Arch when left empty.
+                type: string
+              storageClassName:
+                description: |-
+                  StorageClassName is the StorageClass used for the golden PVC that caches the
+                  extracted crc.qcow2 disk image for this version. For fast per-instance
+                  provisioning it should support CSI clone or snapshot; if it does not,
+                  ClusterInstances fall back to a full re-import per instance.
+                type: string
+              version:
+                description: Version is the CRC/OpenShift Local bundle version to
+                  fetch, e.g. "4.16.0".
+                type: string
+            required:
+            - version
+            type: object
+          status:
+            description: CRCBundleStatus defines the observed state of a CRCBundle.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the bundle's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              ocpVersion:
+                description: |-
+                  OCPVersion is the OpenShift version reported by the bundle's own
+                  crc-bundle-info.json metadata, recorded here once extraction succeeds.
+                type: string
+              phase:
+                description: Phase summarizes where this bundle is in its download/extract
+                  lifecycle.
+                type: string
+              qcow2PVCNamespace:
+                description: |-
+                  QCOW2PVCNamespace is the namespace QCOW2PVCRef lives in (the operator's own
+                  namespace, where the bundle-prep Job runs).
+                type: string
+              qcow2PVCRef:
+                description: |-
+                  QCOW2PVCRef references the golden PersistentVolumeClaim holding the extracted
+                  crc.qcow2 disk image, once Phase=Ready. ClusterInstance DataVolumes clone
+                  from it via a cross-namespace CDI PVC source.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              sha256:
+                description: SHA256 is the verified checksum of the downloaded .crcbundle
+                  artifact.
+                type: string
+              sshKeySecretRef:
+                description: |-
+                  SSHKeySecretRef references the Secret (in QCOW2PVCNamespace) holding the
+                  bundle's id_ecdsa_crc SSH private key under data key "id_ecdsa", derived
+                  automatically during extraction.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

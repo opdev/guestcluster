@@ -1,0 +1,60 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterPool
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: crc-pool
+spec:
+  type: crc
+  maxSize: 4
+  # minSize is a stable, total-count floor (any non-terminal phase); the pool
+  # never shrinks below this many instances regardless of lease demand.
+  minSize: 1
+  # warmSpares is the number of Ready, unleased instances kept provisioned
+  # ahead of demand so a ClusterLease can bind instantly. Under active leases
+  # the pool targets roughly leased+warmSpares total, up to maxSize.
+  warmSpares: 2
+  template:
+    # --- Turnkey path (recommended): set crcVersion (and optionally crcArch,
+    # default "amd64") and the operator does the rest. On first use for a given
+    # version/arch, the ClusterPool controller auto-creates a cluster-scoped
+    # CRCBundle (named "crc-<version>-<arch>"); if one already exists it is
+    # reused as-is (no re-download). The CRCBundle's controller runs a one-time
+    # "bundle-prep" Job that downloads the official .crcbundle from
+    # mirror.openshift.com, verifies its sha256, extracts crc.qcow2 into a
+    # golden PVC, and publishes the bundle's SSH key as a Secret -- all shared
+    # across every pool/namespace requesting the same version. Each
+    # ClusterInstance then clones the golden PVC (via CDI) rather than
+    # re-downloading. See README.md's "Turnkey CRC bundle provisioning"
+    # section and config/samples/broker_v1alpha1_crcbundle.yaml.
+    crcVersion: "4.22.7"
+    # crcArch: "amd64"
+    ocpVersion: "4.22.7"
+    memory: "16Gi"
+    cores: 4
+    rootVolumeSize: "80Gi"
+    # Optional: defaults to a copy of the management cluster's own global
+    # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
+    # to override, e.g. for a disconnected/mirrored registry.
+    # pullSecretRef:
+    #   name: crc-pull-secret
+    storageClassName: ""
+    # --- Manual fallback (advanced/offline/custom-source use cases): leave
+    # crcVersion unset and instead provide releaseImage + bundleSSHKeyRef
+    # directly. When crcVersion is set (above), these two fields are ignored.
+    #
+    # releaseImage MUST be the URL of the crc.qcow2 disk image *extracted* from
+    # an official .crcbundle (not the .crcbundle tar itself), hosted somewhere
+    # reachable over HTTP by CDI, e.g.:
+    #   curl -L -o crc.crcbundle <bundle-download-url>
+    #   tar --zstd -xf crc.crcbundle
+    #   # upload the resulting crc.qcow2 to your HTTP-reachable image host
+    # releaseImage: "https://mirror.example.com/crc/crc.qcow2"
+    #
+    # bundleSSHKeyRef references a Secret containing the SAME bundle's SSH
+    # private key (id_ecdsa_crc, for user "core"), created once per pool, e.g.:
+    #   kubectl create secret generic crc-bundle-ssh-key \
+    #     --from-file=id_ecdsa=./id_ecdsa_crc
+    # bundleSSHKeyRef:
+    #   name: crc-bundle-ssh-key

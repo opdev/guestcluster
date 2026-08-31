@@ -1,0 +1,20 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: guestcluster-operator-pull-secret-reader-binding
+  namespace: openshift-config
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: guestcluster-operator-pull-secret-reader
+subjects:
+# This name/namespace must match the manager ServiceAccount as built by
+# config/default (namePrefix "guestcluster-operator-" + namespace
+# "guestcluster-operator-system"). If you deploy with a different name prefix or
+# namespace, update this subject to match.
+- kind: ServiceAccount
+  name: guestcluster-operator-controller-manager
+  namespace: guestcluster-operator-system

@@ -1,0 +1,33 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterPool
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: hcp-pool
+spec:
+  type: hcp
+  maxSize: 3
+  # warmSpares keeps 1 Ready, unleased instance provisioned ahead of demand.
+  # minSize (omitted, defaults to 0) would additionally floor the pool at a
+  # fixed total instance count regardless of lease demand.
+  warmSpares: 1
+  template:
+    releaseImage: "quay.io/openshift-release-dev/ocp-release:4.16.10-multi"
+    ocpVersion: "4.16.10"
+    # nodePoolReplicas defaults to 1 when omitted. Set higher for more worker
+    # capacity per guest cluster.
+    nodePoolReplicas: 1
+    # controllerAvailabilityPolicy defaults to SingleReplica, suited to
+    # small/dev management clusters. Set to HighlyAvailable for a 3-way
+    # etcd/kube-apiserver spread if the management cluster has enough
+    # schedulable, untainted nodes for that anti-affinity.
+    controllerAvailabilityPolicy: SingleReplica
+    memory: "8Gi"
+    cores: 2
+    rootVolumeSize: "32Gi"
+    # Optional: defaults to a copy of the management cluster's own global
+    # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
+    # to override, e.g. for a disconnected/mirrored registry.
+    pullSecretRef:
+      name: hypershift-pull-secret
