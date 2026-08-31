@@ -1,0 +1,30 @@
+# dependabot config
+
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      test-dependencies:
+        patterns:
+          - "github.com/onsi/ginkgo*"
+          - "github.com/onsi/gomega*"
+      prod-dependencies:
+        exclude-patterns:
+          - "github.com/onsi/ginkgo*"
+          - "github.com/onsi/gomega*"
+    ignore:
+      # This nested module has no "api/vX.Y.Z" release tag in the upstream
+      # repo, so Dependabot cannot resolve version updates for it and the
+      # job fails.
+      - dependency-name: "github.com/openshift/hypershift/api"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
