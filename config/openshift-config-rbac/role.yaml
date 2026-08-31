@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: guestcluster-operator-pull-secret-reader
+  namespace: openshift-config
+rules:
+# Scoped to exactly the one Secret the operator ever needs from this
+# namespace: the management cluster's own global pull secret, read as the
+# default when a ClusterTemplate leaves PullSecretRef unset (see
+# ClusterInstanceReconciler.resolvePullSecret). resourceNames restricts get
+# access to this single object; note resourceNames cannot constrain
+# list/watch, so those verbs are deliberately omitted.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  resourceNames:
+  - pull-secret
+  verbs:
+  - get

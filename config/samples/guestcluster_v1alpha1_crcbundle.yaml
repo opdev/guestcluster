@@ -1,0 +1,22 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: CRCBundle
+metadata:
+  labels:
+    app.kubernetes.io/name: guestcluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  # CRCBundle is cluster-scoped; naming it after resources.CRCBundleName's
+  # convention ("crc-<version>-<arch>") is not required but keeps it
+  # consistent with what ClusterPoolReconciler auto-creates on your behalf.
+  name: crc-4.16.0-amd64
+spec:
+  # Applying this sample manually is optional: a ClusterPool with
+  # template.crcVersion set to the same version/arch will auto-create an
+  # equivalent CRCBundle if one doesn't already exist. Apply this directly
+  # only if you want to pre-warm the golden PVC before any pool references
+  # it, or want to override bundleURL/sha256URL/storageClassName below.
+  version: "4.16.0"
+  arch: "amd64"
+  # bundleURL: "https://mirror.example.com/mirrored-crc-bundles/crc.crcbundle"
+  # sha256URL: "https://mirror.example.com/mirrored-crc-bundles/sha256sum.txt"
+  # storageClassName: ""
+  # goldenVolumeSize: "35Gi"

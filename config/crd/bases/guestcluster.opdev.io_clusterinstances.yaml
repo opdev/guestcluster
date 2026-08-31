@@ -1,0 +1,451 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: clusterinstances.guestcluster.opdev.io
+spec:
+  group: guestcluster.opdev.io
+  names:
+    kind: ClusterInstance
+    listKind: ClusterInstanceList
+    plural: clusterinstances
+    shortNames:
+    - cinst
+    singular: clusterinstance
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.ocpVersion
+      name: Version
+      type: string
+    - jsonPath: .status.topology
+      name: Topology
+      type: string
+    - jsonPath: .status.leaseRef.name
+      name: Lease
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterInstance is the Schema for the clusterinstances API. It represents a single
+          concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
+          this operator.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ClusterInstanceSpec defines the desired state of ClusterInstance.
+            properties:
+              poolRef:
+                description: |-
+                  PoolRef names the owning ClusterPool in the same namespace. Empty for
+                  standalone instances created outside of pool management.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              template:
+                description: |-
+                  Template is a (possibly pool-inherited) copy of the provisioning parameters used
+                  to create this instance.
+                properties:
+                  bundleSSHKeyRef:
+                    description: |-
+                      BundleSSHKeyRef references a Secret (in the operator's namespace) containing the
+                      CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official
+                      .crcbundle, used to reach the booted VM as user "core"), under a data key named
+                      "id_ecdsa" or "ssh-privatekey". This field is a FALLBACK. When CRCVersion is set,
+                      the operator derives the SSH key automatically from the referenced CRCBundle
+                      instead, and this field is ignored. When CRCVersion is unset, this field is
+                      required for topology=crc: the crc-agent Job uses this key to SSH into the
+                      freshly booted CRC VM and run the post-boot fixups natively (start kubelet,
+                      approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the
+                      kubeconfig server to the externally-routable API Route hostname the
+                      ClusterInstance controller provisions). Ignored for topology=hcp.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  controllerAvailabilityPolicy:
+                    default: SingleReplica
+                    description: |-
+                      ControllerAvailabilityPolicy sets the HostedCluster control-plane
+                      availability for topology=hcp: SingleReplica or HighlyAvailable. Defaults
+                      to SingleReplica, since HighlyAvailable's 3-way etcd/kube-apiserver spread
+                      requires anti-affinity across that many schedulable, untainted nodes on
+                      the management cluster, which small/dev management clusters (e.g.
+                      CRC-hosted) often don't have. HighlyAvailable is therefore opt-in.
+                      This field maps directly to HostedCluster.spec.controllerAvailabilityPolicy,
+                      which is immutable once the HostedCluster is created. Changing this field
+                      on an existing ClusterTemplate has no effect on already-provisioned
+                      instances. Ignored for topology=crc.
+                    enum:
+                    - SingleReplica
+                    - HighlyAvailable
+                    type: string
+                  cores:
+                    description: Cores is the number of vCPUs allocated per VM.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  crcArch:
+                    description: |-
+                      CRCArch is the CPU architecture of the CRC bundle to fetch when CRCVersion is
+                      set. Defaults to "amd64" if left empty. Ignored when CRCVersion is unset, and
+                      for topology=hcp.
+                    enum:
+                    - amd64
+                    - arm64
+                    type: string
+                  crcVersion:
+                    description: |-
+                      CRCVersion, when set (topology=crc only), is the turnkey path. The admin
+                      specifies only a CRC/OpenShift Local version (e.g. "4.16.0"), and the operator
+                      downloads, verifies, and extracts the official bundle for that version via a
+                      cluster-scoped CRCBundle. The operator auto-creates this CRCBundle and reuses it
+                      across pools/instances (see api/v1alpha1/crcbundle_types.go), then clones its
+                      cached crc.qcow2 and SSH key for this instance. When set, ReleaseImage and
+                      BundleSSHKeyRef below are ignored (they are derived from the CRCBundle instead).
+                      Ignored for topology=hcp.
+                    type: string
+                  hcpWorkerSSHKeyRef:
+                    description: |-
+                      HCPWorkerSSHKeyRef optionally references a Secret (in the operator's namespace)
+                      containing an SSH public key, under a data key named "id_rsa.pub", to inject as
+                      an authorized key for the "core" user on every hcp NodePool worker (via
+                      HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
+                      generation). This field is only a debugging convenience (e.g. to inspect a
+                      worker that is stuck before ever registering as a Node) and has no effect on
+                      cluster function. Most deployments should leave it unset. Ignored for
+                      topology=crc (see BundleSSHKeyRef for that path's own, unrelated SSH mechanism).
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  idmsRef:
+                    description: |-
+                      IDMSRef optionally references an ImageDigestMirrorSet-shaped ConfigMap applied at
+                      provision time for disconnected/mirrored registries. Interpreted per-topology:
+                      for hcp it seeds HostedCluster.spec.imageContentSources; for crc it is applied
+                      as an ImageDigestMirrorSet inside the guest cluster post-boot.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  memory:
+                    description: |-
+                      Memory is the amount of memory allocated per VM (CRC VM, or each HyperShift KubeVirt
+                      worker VM). E.g. "16Gi" for CRC, "6Gi" for a HyperShift worker.
+                    type: string
+                  nodePoolReplicas:
+                    description: |-
+                      NodePoolReplicas is the number of worker replicas for topology=hcp. Ignored
+                      for topology=crc. Defaults to 1 when unset.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  ocpVersion:
+                    description: |-
+                      OCPVersion is the expected/recorded OpenShift version for clusters provisioned from
+                      this template (e.g. "4.16.10"). It is echoed back on ClusterInstance.status.ocpVersion
+                      once the guest cluster reports its own version, and is used to detect drift.
+                    type: string
+                  pullSecretRef:
+                    description: |-
+                      PullSecretRef references a Secret (in the operator's namespace) containing the
+                      pull-secret used to pull the release payload / CRC bundle images. This field is
+                      optional. When unset, the operator defaults to the management cluster's own
+                      global pull secret (the "pull-secret" Secret in the "openshift-config"
+                      namespace), which is present on every OpenShift cluster. Set this field
+                      explicitly to use a different/narrower credential (e.g. one scoped to a
+                      disconnected mirror).
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  releaseImage:
+                    description: |-
+                      ReleaseImage is the OCP release payload image used to provision the guest
+                      cluster. For topology=crc this is a FALLBACK to the turnkey CRCVersion path
+                      above. When CRCVersion is unset, this MUST be an HTTP(S) URL to the
+                      *extracted* crc.qcow2 disk image from an official CRC/OpenShift Local
+                      .crcbundle (NOT the .crcbundle tar itself). For example, extract via
+                      `curl <bundle-url> | tar --zstd -xf -` and host the resulting crc.qcow2 at a
+                      URL reachable by CDI's HTTP DataVolume importer. For topology=hcp this is
+                      always the HyperShift/OCP release image pullspec (required, CRCVersion does
+                      not apply).
+                    type: string
+                  rootVolumeSize:
+                    description: RootVolumeSize is the size of the root disk (e.g.
+                      "35Gi").
+                    type: string
+                  storageClassName:
+                    description: StorageClassName is the StorageClass used for VM
+                      root/data volumes.
+                    type: string
+                  vmNodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: VMNodeSelector constrains which hypervisor node(s)
+                      the guest VM(s) are scheduled to.
+                    type: object
+                required:
+                - cores
+                - memory
+                - ocpVersion
+                type: object
+              type:
+                description: Type is the topology of this guest cluster.
+                enum:
+                - crc
+                - hcp
+                type: string
+            required:
+            - template
+            - type
+            type: object
+          status:
+            description: ClusterInstanceStatus defines the observed state of ClusterInstance.
+            properties:
+              apiEndpoint:
+                description: APIEndpoint is the guest cluster's externally reachable
+                  API server URL.
+                type: string
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the instance's state,
+                  e.g. type=Ready, type=VersionMismatch.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              crc:
+                description: CRC holds backing-object references for topology=crc
+                  instances.
+                properties:
+                  dataVolumeName:
+                    description: DataVolumeName is the CDI DataVolume providing the
+                      VM's root disk.
+                    type: string
+                  sshEndpoint:
+                    description: |-
+                      SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
+                      post-boot fixups and kubeconfig extraction.
+                    type: string
+                  vmName:
+                    description: VMName is the name of the KubeVirt VirtualMachine
+                      running the CRC/SNO bundle.
+                    type: string
+                type: object
+              hyperShift:
+                description: HyperShift holds backing-object references for topology=hcp
+                  instances.
+                properties:
+                  hostedClusterName:
+                    description: HostedClusterName is the name of the hypershift.openshift.io/v1beta1
+                      HostedCluster.
+                    type: string
+                  hostedClusterNamespace:
+                    description: |-
+                      HostedClusterNamespace is the namespace holding the HostedCluster (conventionally
+                      "clusters").
+                    type: string
+                  nodePoolNames:
+                    description: NodePoolNames lists the NodePool(s) backing this
+                      instance's workers.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              kubeconfigSecretRef:
+                description: |-
+                  KubeconfigSecretRef names the Secret (in this ClusterInstance's namespace)
+                  containing the guest cluster's admin kubeconfig under key "kubeconfig".
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              leaseRef:
+                description: |-
+                  LeaseRef names the ClusterLease currently claiming this instance, if any.
+                  ClusterInstanceReconciler maintains this READ-ONLY, DERIVED projection for
+                  observability only (e.g. the "Lease" column on `kubectl get clusterinstance`).
+                  This field is never authoritative, and nothing, including the ClusterPool and
+                  ClusterInstance controllers themselves, makes scheduling/lifecycle decisions
+                  based on it. The single source of truth for the binding is
+                  ClusterLease.Status.InstanceRef. ClusterInstanceReconciler keeps this field in
+                  sync with that value by watching ClusterLeases, so it may lag by one reconcile.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              observedGeneration:
+                description: ObservedGeneration is the generation last reconciled.
+                format: int64
+                type: integer
+              ocpVersion:
+                description: |-
+                  OCPVersion is the OpenShift version reported by the running guest
+                  cluster (as opposed to Spec.Template.OCPVersion, which is the requested version).
+                  A mismatch between requested and observed is surfaced via the VersionMismatch
+                  condition and must be treated by CI as a hard fail unless explicitly waived.
+                type: string
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Provisioning
+                - Ready
+                - Failed
+                - Terminating
+                type: string
+              topology:
+                description: |-
+                  Topology echoes Spec.Type once the instance is Ready, for convenient consumption
+                  as an explicit CI output alongside OCPVersion.
+                enum:
+                - crc
+                - hcp
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
