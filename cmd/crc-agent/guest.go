@@ -349,7 +349,6 @@ func startKubelet(runner *Runner) error {
 //     oc-on-guest exception, matching crc's own approach: the API server
 //     must trust the CA before any typed client using it can connect.
 //  5. Copy the patched kubeconfig into /opt/kubeconfig on the guest.
-//  6. Patch the 99-master-ssh machineconfig with the new public key.
 //
 // Ported from crc pkg/crc/machine/start.go updateKubeconfig and
 // pkg/crc/cluster/cluster.go EnsureGeneratedClientCAPresentInTheCluster.
@@ -411,8 +410,8 @@ func bootstrapCA(runner *Runner) (*guestResult, error) {
 		return nil, fmt.Errorf("writing patched kubeconfig to guest: %w", err)
 	}
 
-	// NOTE: this code does not patch the 99-master-ssh machineconfig with the
-	// new SSH public key here, unlike upstream crc's
+	// Do not patch the 99-master-ssh machineconfig with the new SSH public key,
+	// unlike upstream crc's
 	// EnsureSSHKeyPresentInTheCluster. A JSON merge-patch on
 	// sshAuthorizedKeys replaces the whole array. Once the
 	// machine-config-operator/daemon reconciles that MachineConfig, it

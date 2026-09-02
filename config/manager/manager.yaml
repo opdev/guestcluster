@@ -30,10 +30,9 @@ spec:
         control-plane: controller-manager
         app.kubernetes.io/name: guestcluster-operator
     spec:
-      # TODO(user): Uncomment the following code to configure the nodeAffinity expression
-      # according to the platforms which are supported by your solution.
-      # It is considered best practice to support multiple architectures. You can
-      # build your manager image using the makefile target docker-buildx.
+      # Optional multi-architecture scheduling. Enable only architectures for
+      # which the manager image is published. Use `make docker-buildx` to build
+      # a multi-architecture manager image.
       # affinity:
       #   nodeAffinity:
       #     requiredDuringSchedulingIgnoredDuringExecution:
@@ -85,10 +84,10 @@ spec:
           # internal/resources.CRCAgentServiceAccountEnvVar.
           - name: CRC_AGENT_SERVICE_ACCOUNT
             value: crc-agent
-          # TODO(user): set this to your built/pushed crc-agent image. It is
-          # used for both the per-instance crc-agent Job (topology=crc) and
-          # the CRCBundle bundle-prep Job, which reuses the same image (see
-          # internal/resources.DefaultCRCAgentImage/CRCAgentImageEnvVar).
+          # Required for production. Set this to the pushed crc-agent image.
+          # It is used by the per-instance crc-agent Job (topology=crc) and
+          # the CRCBundle bundle-prep Job. Use an overlay or Kustomize image
+          # replacement; do not use the development default.
           # - name: CRC_AGENT_IMAGE
           #   value: <registry>/guestcluster-operator-crc-agent:tag
         ports: []
@@ -109,8 +108,7 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # Starter resource values. Tune these values after measuring workload use.
         resources:
           limits:
             cpu: 500m

@@ -48,8 +48,7 @@ resources:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
-#- ../certmanager
+# This project does not currently provide cert-manager resources.
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
@@ -68,9 +67,8 @@ patches:
   target:
     kind: Deployment
 
-# Uncomment the patches line if you enable Metrics and CertManager
-# [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
-# This patch will protect the metrics with certManager self-signed certs.
+# Template patch for a trusted metrics certificate configuration. It requires
+# a matching Certificate resource, which this project does not provide yet.
 #- path: cert_metrics_manager_patch.yaml
 #  target:
 #    kind: Deployment
@@ -81,8 +79,8 @@ patches:
 #  target:
 #    kind: Deployment
 
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
-# Uncomment the following replacements to add the cert-manager CA injection annotations
+# The commented replacements below are Kubebuilder certificate templates.
+# They need matching Certificate and webhook resources before use.
 #replacements:
 # - source: # Uncomment the following block to enable certificates for metrics
 #     kind: Service

@@ -1,5 +1,6 @@
-# Patch for Prometheus ServiceMonitor to enable secure TLS configuration
-# using certificates managed by cert-manager
+# Template patch for a trusted metrics certificate configuration. It requires
+# the metrics-server-cert Secret and Kustomize replacements for SERVICE_NAME
+# and SERVICE_NAMESPACE before use.
 - op: replace
   path: /spec/endpoints/0/tlsConfig
   value:
