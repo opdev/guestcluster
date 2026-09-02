@@ -1,4 +1,3 @@
-## Append samples of your project ##
 resources:
 - guestcluster_v1alpha1_crcbundle.yaml
 - guestcluster_v1alpha1_clusterpool.yaml

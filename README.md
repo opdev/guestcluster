@@ -150,8 +150,8 @@ Two controllers implement this:
   does not wait for the requeue backstop.
 
   On release, the lease controller deletes the claimed `ClusterInstance`
-  outright. Release happens on TTL expiry, on explicit deletion of the
-  `ClusterLease`, or (in future) on an explicit "release" annotation.
+  outright. Release happens on TTL expiry or explicit deletion of the
+  `ClusterLease`.
   `ClusterPoolReconciler`'s normal top-up loop then provisions a fresh
   replacement. It treats this the same as any other capacity shortfall.
 
@@ -256,18 +256,17 @@ that object instead. `CRCBundleReconciler` then:
 
 1. Creates a golden `PersistentVolumeClaim` (default size: `35Gi`,
    configurable via `CRCBundle.spec.goldenVolumeSize`) and a transient
-   scratch `PersistentVolumeClaim` (`20Gi`, fixed size). Both live in the
+   scratch `PersistentVolumeClaim` (`40Gi`, fixed size). Both live in the
    **operator's own namespace** (see `OPERATOR_NAMESPACE` below).
 2. Runs a one-time, run-to-completion **bundle-prep Job**. This Job reuses
    the crc-agent container image (see
    [crc-agent](#crc-agent-cmdcrc-agent)) but overrides its command and
    args to run an embedded shell script instead. The Job downloads the
    official `.crcbundle` from `mirror.openshift.com`. It verifies the
-   download against the `sha256sum.txt` checksum. It streams **only** the
-   `crc.qcow2` member out of the still-compressed archive, directly into
-   the golden PVC, using `tar --zstd -xOf ... | ...`. This is why the
-   scratch PVC only needs to hold the compressed download. It never needs
-   to hold both the compressed and uncompressed copies at once.
+   download against the `sha256sum.txt` checksum, extracts `crc.qcow2` into
+   the scratch PVC, then converts it to raw format at `/disk.img` in the
+   golden PVC. The scratch PVC holds both the compressed and extracted
+   files during conversion.
 3. Publishes the bundle's `id_ecdsa_crc` SSH key as a `Secret`. It also
    publishes a small `ConfigMap` with the derived OpenShift version and
    checksum. Both live in the operator's namespace. The `CRCBundle` owns
@@ -287,7 +286,7 @@ The `CRCBundle` object is **cluster-scoped and shared**. Any number of
 `crcArch`. They then reuse the same golden PVC and pay the
 mirror-download cost only once. Expect **~10-20GB of egress from the
 operator's namespace to `mirror.openshift.com`** the first time you use a
-given version. Expect also ~35Gi of golden PVC storage and ~20Gi of
+given version. Expect also ~35Gi of golden PVC storage and ~40Gi of
 transient scratch PVC storage per distinct version. The operator deletes
 the scratch PVC automatically, on a best-effort basis, once the bundle
 reaches `Ready`.
@@ -567,7 +566,7 @@ On the **management** OpenShift cluster:
   cluster can pull from. Reference this image through the manager's
   `CRC_AGENT_IMAGE` environment variable. See
   [crc-agent](#crc-agent-cmdcrc-agent) below.
-- Go 1.24 or later, Docker or Podman, `kubectl` or `oc`. If you plan to
+- Go 1.26 or later, Docker or Podman, `kubectl` or `oc`. If you plan to
   modify this repo, also install `operator-sdk` v1.42 or later.
 
 ## Getting started
@@ -700,7 +699,7 @@ config/samples/                   Example CRs for crc (turnkey + manual), hcp, C
   `ClusterInstance` then stays `Provisioning`, with periodic requeue,
   instead of moving to a hard `Failed` state. A follow-up should watch
   the Job's status directly and surface a clear failure condition.
-- The operator fixes the `<instance>-crc-api` `Route`'s hostname at
+- The operator intentionally fixes the `<instance>-crc-api` `Route`'s hostname at
   creation time, from the management cluster's ingress domain at that
   moment. If the management cluster's own `ingresses.config.openshift.io`
   domain later changes, existing instances keep their original Route
@@ -722,13 +721,6 @@ config/samples/                   Example CRs for crc (turnkey + manual), hcp, C
   independently re-verified the pattern against CDI's source code. If
   clones fail unexpectedly with a permission error, confirm this pattern
   against your CDI/OpenShift Virtualization version.
-- `internal/resources.BuildGoldenPVC` assumes that CDI's importer writes
-  the extracted `crc.qcow2` to the PVC-root path `/disk.img`. This is the
-  standard convention for filesystem-mode PVCs used directly as a
-  KubeVirt VM disk. This assumption follows general CDI convention. This
-  project has not independently re-confirmed it against CDI source. If a
-  KubeVirt VM cloned from the golden PVC fails to find a bootable disk,
-  check this assumption first.
 - `Dockerfile.crc-agent` fetches the `oc` CLI from the `stable-4` mirror
   channel at image-**build** time. This CLI is not pinned to any
   particular CRC bundle's exact OpenShift version. This should remain

@@ -16,6 +16,7 @@ spec:
   # it, or want to override bundleURL/sha256URL/storageClassName below.
   version: "4.16.0"
   arch: "amd64"
+  # Replace these example URLs when using a mirrored bundle.
   # bundleURL: "https://mirror.example.com/mirrored-crc-bundles/crc.crcbundle"
   # sha256URL: "https://mirror.example.com/mirrored-crc-bundles/sha256sum.txt"
   # storageClassName: ""

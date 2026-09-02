@@ -27,7 +27,7 @@ spec:
     # across every pool/namespace requesting the same version. Each
     # ClusterInstance then clones the golden PVC (via CDI) rather than
     # re-downloading. See README.md's "Turnkey CRC bundle provisioning"
-    # section and config/samples/broker_v1alpha1_crcbundle.yaml.
+    # section and config/samples/guestcluster_v1alpha1_crcbundle.yaml.
     crcVersion: "4.22.7"
     # crcArch: "amd64"
     ocpVersion: "4.22.7"
@@ -47,10 +47,11 @@ spec:
     # releaseImage MUST be the URL of the crc.qcow2 disk image *extracted* from
     # an official .crcbundle (not the .crcbundle tar itself), hosted somewhere
     # reachable over HTTP by CDI, e.g.:
+    #   # Replace <bundle-download-url> with your bundle URL.
     #   curl -L -o crc.crcbundle <bundle-download-url>
     #   tar --zstd -xf crc.crcbundle
     #   # upload the resulting crc.qcow2 to your HTTP-reachable image host
-    # releaseImage: "https://mirror.example.com/crc/crc.qcow2"
+    # releaseImage: "https://mirror.example.com/crc/crc.qcow2" # Replace this example URL.
     #
     # bundleSSHKeyRef references a Secret containing the SAME bundle's SSH
     # private key (id_ecdsa_crc, for user "core"), created once per pool, e.g.:

@@ -29,5 +29,5 @@ spec:
     # Optional: defaults to a copy of the management cluster's own global
     # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
     # to override, e.g. for a disconnected/mirrored registry.
-    pullSecretRef:
-      name: hypershift-pull-secret
+    # pullSecretRef:
+    #   name: hypershift-pull-secret

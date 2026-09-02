@@ -10,15 +10,15 @@ spec:
   poolRef:
     name: crc-pool
   template:
-    # Turnkey path (recommended): see broker_v1alpha1_crcbundle.yaml and the
-    # crcVersion field on broker_v1alpha1_clusterpool.yaml. Standalone
+    # Turnkey path (recommended): see guestcluster_v1alpha1_crcbundle.yaml and
+    # the crcVersion field on guestcluster_v1alpha1_clusterpool.yaml. Standalone
     # ClusterInstances (not created via a ClusterPool) can use it too, but a
     # matching CRCBundle must already exist (or be created by some pool)
     # since ClusterInstance itself never auto-creates one.
     crcVersion: "4.16.0"
     # Manual fallback: releaseImage (extracted crc.qcow2 URL) + bundleSSHKeyRef
     # (Secret with the bundle's id_ecdsa_crc key). Ignored when crcVersion is set.
-    # releaseImage: "https://mirror.example.com/crc/crc_libvirt_4.16.0_amd64.qcow2"
+    # releaseImage: "https://mirror.example.com/crc/crc_libvirt_4.16.0_amd64.qcow2" # Replace this example URL.
     # bundleSSHKeyRef:
     #   name: crc-bundle-ssh-key
     ocpVersion: "4.16.0"
@@ -28,5 +28,5 @@ spec:
     # Optional: defaults to a copy of the management cluster's own global
     # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
     # to override, e.g. for a disconnected/mirrored registry.
-    pullSecretRef:
-      name: crc-pull-secret
+    # pullSecretRef:
+    #   name: crc-pull-secret
