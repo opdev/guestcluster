@@ -32,6 +32,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -47,6 +48,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
 
 const (
@@ -104,6 +107,9 @@ type clusterFixupConfig struct {
 	// internal/resources.BuildCRCAPIRoute) used for the external API
 	// serving cert + apiserver namedCertificate patch.
 	APIHostname string
+	// Identity is the management-side certificate material that remains stable
+	// when the backing VMI is replaced.
+	Identity resources.CRCIdentity
 }
 
 // ClusterFixupResult is what a successful RunClusterFixups call returns.
@@ -168,7 +174,9 @@ func RunClusterFixups(
 
 	// 5. External API serving cert + apiserver namedCertificate patch
 	log.Info("cluster: applying external API patches", "apiHostname", cfg.APIHostname)
-	externalAPICACertPEM, err := applyExternalAPIPatches(ctx, clients, cfg.APIHostname)
+	externalAPICACertPEM, err := applyExternalAPIPatches(
+		ctx, clients, cfg.APIHostname, cfg.Identity.ServingCert, cfg.Identity.ServingPrivateKey,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("external API patches: %w", err)
 	}
@@ -326,8 +334,8 @@ func updatePasswords(ctx context.Context, clients *GuestClients, kubeadminPass, 
 // External API access (cert + apiserver namedCertificate)
 // ---------------------------------------------------------------------------
 
-// applyExternalAPIPatches generates the self-signed serving certificate for
-// the externally routable API hostname (the management cluster's
+// applyExternalAPIPatches installs the stable serving certificate for the
+// externally routable API hostname (the management cluster's
 // passthrough Route; see internal/resources.BuildCRCAPIRoute). It publishes
 // the certificate as a TLS secret (see externalAPICertSecretName), and it
 // patches the apiserver config so the API server presents that
@@ -343,11 +351,9 @@ func updatePasswords(ctx context.Context, clients *GuestClients, kubeadminPass, 
 // not the guest's web console, apps, or image registry. The guest's own
 // VMI network is not routable from outside the management cluster for
 // arbitrary wildcard hostnames the way a single API hostname is.
-func applyExternalAPIPatches(ctx context.Context, clients *GuestClients, apiHostname string) ([]byte, error) {
-	certPEM, keyPEM, err := ExternalAPIServingCert(apiHostname)
-	if err != nil {
-		return nil, fmt.Errorf("generating external API serving cert: %w", err)
-	}
+func applyExternalAPIPatches(
+	ctx context.Context, clients *GuestClients, apiHostname string, certPEM, keyPEM []byte,
+) ([]byte, error) {
 	if err := createOrUpdateTLSSecret(
 		ctx, clients, externalAPICertSecretNamespace, externalAPICertSecretName, certPEM, keyPEM,
 	); err != nil {
@@ -375,8 +381,12 @@ func createOrUpdateTLSSecret(ctx context.Context, clients *GuestClients, ns, nam
 		if getErr != nil {
 			return getErr
 		}
-		existing.Data = sec.Data
-		existing.Type = sec.Type
+		if existing.Type == sec.Type &&
+			bytes.Equal(existing.Data[corev1.TLSCertKey], cert) &&
+			bytes.Equal(existing.Data[corev1.TLSPrivateKeyKey], key) {
+			return nil
+		}
+		existing.Data, existing.Type = sec.Data, sec.Type
 		_, err = clients.Core.CoreV1().Secrets(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	}
 	return err

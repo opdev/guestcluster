@@ -35,7 +35,9 @@ import (
 // briefly invalidates any cached copy an external client holds (see
 // ServingCertNeedsRegen's doc comment). The validity window is therefore
 // long-lived.
-const kasServingCertValidity = 10 * 365 * 24 * time.Hour
+const (
+	kasServingCertValidity = 10 * 365 * 24 * time.Hour
+)
 
 // kasServingCertRenewBefore is how far ahead of actual expiry
 // ServingCertNeedsRegen requests regeneration. This gives a reconcile
@@ -107,7 +109,7 @@ func GenerateAPIServerServingCert(hostname string) (certPEM, keyPEM []byte, err 
 		return nil, nil, fmt.Errorf("marshaling private key: %w", err)
 	}
 
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: pemCertificateType, Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
 }

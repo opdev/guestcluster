@@ -40,6 +40,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -73,6 +74,23 @@ func NewRunner(host string, port int, user string, signer gossh.Signer) (*Runner
 // Close releases the underlying SSH connection.
 func (r *Runner) Close() error {
 	return r.client.Close()
+}
+
+// closeRunnerOnCancellation closes SSH sessions that cannot otherwise observe
+// context cancellation, including a blocked Session.Run call.
+func closeRunnerOnCancellation(ctx context.Context, runner *Runner) func() {
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = runner.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		once.Do(func() { close(done) })
+	}
 }
 
 // Run executes cmd on the guest and returns combined stdout+stderr.

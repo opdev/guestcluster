@@ -43,7 +43,7 @@ limitations under the License.
 //     - Approve pending kubelet CSRs.
 //     - Inject the real pull secret.
 //     - Update kubeadmin + developer passwords (bcrypt in-process, no podman).
-//     - Generate a self-signed serving cert for cfg.APIHostname (the
+//     - Install the stable serving cert for cfg.APIHostname (the
 //     management-cluster passthrough Route host the ClusterInstance
 //     controller already provisioned, see
 //     internal/resources.BuildCRCAPIRoute) and patch the apiserver's
@@ -52,18 +52,16 @@ limitations under the License.
 //     - Read the OpenShift version from ClusterVersion.
 //  5. Produce a routable admin kubeconfig (server rewritten to
 //     https://<cfg.APIHostname>) and publish it together with the OCP
-//     version as a Secret named "<instance>-crc-raw-kubeconfig" in the
+//     version as a VMI-specific Secret in the
 //     ClusterInstance's namespace (keys "kubeconfig" and "ocpVersion").
 //     This Secret is the only contract between crc-agent and the
 //     ClusterInstance controller. ensureCRCBacking (clusterinstance_crc.go)
 //     reads this Secret and never SSHes anywhere itself.
 //
-// crc-agent is deployed as a Kubernetes Job, one per ClusterInstance. The
-// controller recreates the Job on every recycle, so a fresh run always
-// accompanies a fresh VM boot. This recreation also refreshes the bundle's
-// ~30-day-limited certificates. The Job runs to completion. Success means the
-// raw kubeconfig Secret now exists. Failure exits non-zero, and the Job's
-// BackoffLimit governs retries.
+// crc-agent is deployed as a Kubernetes Job, one per ClusterInstance VMI. The
+// controller creates a new, VMI-scoped Job after a VMI replacement. The Job runs to completion.
+// Success means the raw kubeconfig Secret now exists. Failure exits non-zero,
+// and the Job's BackoffLimit governs retries.
 //
 // The crc-agent container image needs only the following host tools:
 //   - curl, tar (zstd), jq, sha256sum, sed, coreutils, qemu-img: for the
@@ -77,15 +75,18 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -102,22 +103,24 @@ import (
 // spec can set it (see internal/resources.BuildCRCAgentJob) without any
 // additional CRDs of its own.
 type config struct {
-	Namespace    string // ClusterInstance/Secret namespace
-	InstanceName string // ClusterInstance name; also the CRC VM name (resources.VMName)
-	SSHHost      string // CRC VM's reachable IP/host (populated from VMI status by the controller)
-	SSHPort      int
-	SSHUser      string
-	SSHKeyPath   string // path to the CRC bundle's SSH private key, mounted into the container
+	Namespace      string // ClusterInstance/Secret namespace
+	InstanceName   string // ClusterInstance name; also the CRC VM name (resources.VMName)
+	SSHHost        string // CRC VM's reachable IP/host (populated from VMI status by the controller)
+	ExpectedVMIUID string // UID of the VMI this Job is allowed to configure
+	SSHPort        int
+	SSHUser        string
+	SSHKeyPath     string // path to the CRC bundle's SSH private key, mounted into the container
 
 	// APIHostname is the externally-routable hostname of the management
 	// cluster's passthrough Route fronting the guest API server (see
 	// internal/resources.BuildCRCAPIRoute), populated by the
-	// ClusterInstance controller via CRC_API_HOSTNAME. Used to mint the
-	// guest API server's external-facing serving cert and to rewrite the
-	// published kubeconfig's server URL.
+	// ClusterInstance controller via CRC_API_HOSTNAME. Used to validate the
+	// mounted identity and rewrite the published kubeconfig's server URL.
 	APIHostname string
 
 	PullSecretPath string // path to the real pull secret file, mounted into the container
+	Identity       resources.CRCIdentity
+	IdentityPath   string
 
 	SSHReadyTimeout  time.Duration // how long to wait for the VM's sshd to accept connections
 	SSHRetryInterval time.Duration // how often to retry the SSH-reachability check
@@ -128,10 +131,12 @@ func configFromEnv() config {
 		Namespace:      os.Getenv("INSTANCE_NAMESPACE"),
 		InstanceName:   os.Getenv("INSTANCE_NAME"),
 		SSHHost:        os.Getenv("CRC_SSH_HOST"),
+		ExpectedVMIUID: os.Getenv("CRC_VMI_UID"),
 		SSHUser:        envDefault("CRC_SSH_USER", "core"),
 		SSHKeyPath:     envDefault("CRC_SSH_KEY_PATH", resources.CRCAgentSSHKeyPath()),
 		APIHostname:    os.Getenv(resources.CRCAPIHostnameEnvVar),
 		PullSecretPath: envDefault("PULL_SECRET_PATH", resources.CRCAgentPullSecretPath()),
+		IdentityPath:   envDefault("CRC_IDENTITY_PATH", "/etc/crc-agent/identity"),
 	}
 	c.SSHPort = 22
 	c.SSHReadyTimeout = 5 * time.Minute
@@ -163,10 +168,11 @@ func main() {
 	flag.StringVar(&cfg.InstanceName, "instance-name", cfg.InstanceName, "ClusterInstance name this agent serves")
 	flag.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace of the ClusterInstance/Secret")
 	flag.StringVar(&cfg.SSHHost, "ssh-host", cfg.SSHHost, "SSH-reachable host/IP of the CRC VM")
+	flag.StringVar(&cfg.ExpectedVMIUID, "vmi-uid", cfg.ExpectedVMIUID, "UID of the CRC VMI")
 	flag.Parse()
 
-	if cfg.InstanceName == "" || cfg.Namespace == "" || cfg.SSHHost == "" {
-		const missingConfigMsg = "INSTANCE_NAME, INSTANCE_NAMESPACE and CRC_SSH_HOST " +
+	if cfg.InstanceName == "" || cfg.Namespace == "" || cfg.SSHHost == "" || cfg.ExpectedVMIUID == "" {
+		const missingConfigMsg = "INSTANCE_NAME, INSTANCE_NAMESPACE, CRC_SSH_HOST and CRC_VMI_UID " +
 			"(or their --flag equivalents) are required"
 		log.Error(fmt.Errorf("missing required configuration"), missingConfigMsg)
 		os.Exit(1)
@@ -177,24 +183,59 @@ func main() {
 		log.Error(err, "mounted bundle SSH key failed pre-flight validation")
 		os.Exit(1)
 	}
+	identity, err := loadCRCIdentity(cfg.IdentityPath, cfg.APIHostname)
+	if err != nil {
+		log.Error(err, "mounted CRC identity failed pre-flight validation")
+		os.Exit(1)
+	}
+	cfg.Identity = identity
 
-	kc, err := kubeClient()
+	restCfg, err := kubeRESTConfig()
 	if err != nil {
 		log.Error(err, "unable to build Kubernetes client")
 		os.Exit(1)
 	}
+	kc, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		log.Error(err, "unable to build Kubernetes client")
+		os.Exit(1)
+	}
+	vmiClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		log.Error(err, "unable to build KubeVirt client")
+		os.Exit(1)
+	}
 
 	ctx := ctrl.SetupSignalHandler()
-
-	log.Info("starting crc-agent", "instance", cfg.InstanceName, "namespace", cfg.Namespace, "sshHost", cfg.SSHHost)
-
-	info, err := fetchClusterInfo(ctx, log, cfg, bundleSigner)
+	watchedCtx, stopVMIWatch, err := monitorCRCVMILifecycle(ctx, vmiClient, cfg, log)
 	if err != nil {
+		log.Error(err, "unable to monitor CRC VirtualMachineInstance")
+		os.Exit(1)
+	}
+	defer stopVMIWatch()
+
+	log.Info("starting crc-agent", "instance", cfg.InstanceName, "namespace", cfg.Namespace,
+		"sshHost", cfg.SSHHost, "vmiUid", cfg.ExpectedVMIUID)
+
+	info, err := fetchClusterInfo(watchedCtx, log, cfg, bundleSigner)
+	if err != nil {
+		if errors.Is(context.Cause(watchedCtx), errCRCVMINoLongerCurrent) {
+			log.Info("CRC VirtualMachineInstance is no longer current; ending agent run")
+			return
+		}
 		log.Error(err, "failed to bring up CRC cluster")
 		os.Exit(1)
 	}
 
-	if err := publishRawKubeconfig(ctx, kc, cfg, info); err != nil {
+	if err := ensureExpectedCRCVMIRunning(ctx, vmiClient.Resource(crcVMIGVR).Namespace(cfg.Namespace), cfg); err != nil {
+		if errors.Is(err, errCRCVMINoLongerCurrent) {
+			log.Info("CRC VirtualMachineInstance is no longer current; not publishing handoff")
+			return
+		}
+		log.Error(err, "unable to verify CRC VirtualMachineInstance before publishing handoff")
+		os.Exit(1)
+	}
+	if err := publishRawKubeconfig(watchedCtx, kc, cfg, info); err != nil {
 		log.Error(err, "failed to publish raw kubeconfig secret")
 		os.Exit(1)
 	}
@@ -202,10 +243,7 @@ func main() {
 	log.Info("published raw kubeconfig, crc-agent run complete", "ocpVersion", info.OCPVersion)
 }
 
-// kubeClient builds a client-go Clientset, preferring in-cluster config (the normal
-// deployment mode, as a Job Pod in the mgmt cluster) and falling back to KUBECONFIG
-// for local development/testing of the agent binary itself.
-func kubeClient() (*kubernetes.Clientset, error) {
+func kubeRESTConfig() (*rest.Config, error) {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		kubeconfig := os.Getenv("KUBECONFIG")
@@ -217,7 +255,7 @@ func kubeClient() (*kubernetes.Clientset, error) {
 			return nil, fmt.Errorf("building config from KUBECONFIG: %w", err)
 		}
 	}
-	return kubernetes.NewForConfig(restCfg)
+	return restCfg, nil
 }
 
 // fetchClusterInfo is the main orchestration function. It performs these steps:
@@ -241,9 +279,11 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	if err != nil {
 		return nil, fmt.Errorf("SSH connect (bundle key): %w", err)
 	}
+	stopClosingRunner := closeRunnerOnCancellation(ctx, runner)
 
 	log.Info("running guest-side fixups")
 	guestRes, err := RunGuestFixups(runner, cfg, log)
+	stopClosingRunner()
 	if err != nil {
 		_ = runner.Close()
 		return nil, fmt.Errorf("guest fixups: %w", err)
@@ -256,11 +296,13 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	if err != nil {
 		return nil, fmt.Errorf("SSH reconnect (new key): %w", err)
 	}
+	stopClosingRunner2 := closeRunnerOnCancellation(ctx, runner2)
+	defer stopClosingRunner2()
 	defer func() { _ = runner2.Close() }()
 
 	// 4. Build typed guest clients (routed through the SSH tunnel).
 	// The CA here must be guestRes.ServerCAPEM, the bundle's own
-	// server-serving-cert CA. It must not be CAPem(guestRes.CACert): that CA
+	// server-serving-cert CA. It must not be the mounted client CA: that CA
 	// only signs the client cert (trusted through admin-kubeconfig-client-ca)
 	// and never signed the API server's own TLS certificate for the
 	// api.crc.testing SNI. Using that CA here produces "certificate signed
@@ -284,6 +326,7 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	fixupCfg := clusterFixupConfig{
 		PullSecretJSON: pullSecretJSON,
 		APIHostname:    cfg.APIHostname,
+		Identity:       cfg.Identity,
 	}
 
 	log.Info("running cluster-level fixups")
@@ -374,11 +417,30 @@ func loadSigner(path string) (gossh.Signer, error) {
 	return signer, nil
 }
 
+func loadCRCIdentity(path, hostname string) (resources.CRCIdentity, error) {
+	keys := []string{
+		resources.CRCIdentityClientCAKey,
+		resources.CRCIdentityClientCertKey,
+		resources.CRCIdentityClientPrivateKey,
+		resources.CRCIdentityServingCertKey,
+		resources.CRCIdentityServingPrivateKey,
+	}
+	data := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		value, err := os.ReadFile(path + "/" + key)
+		if err != nil {
+			return resources.CRCIdentity{}, fmt.Errorf("reading identity key %q: %w", key, err)
+		}
+		data[key] = value
+	}
+	return resources.CRCIdentityFromSecretData(data, hostname)
+}
+
 // publishRawKubeconfig creates or updates the raw kubeconfig Secret that the
 // ClusterInstance controller's ensureCRCBacking reads (see
-// internal/resources.RawKubeconfigSecretName/KubeconfigSecretKey/OCPVersionSecretKey).
+// internal/resources.RawKubeconfigSecretNameForVMI/KubeconfigSecretKey/OCPVersionSecretKey).
 func publishRawKubeconfig(ctx context.Context, kc *kubernetes.Clientset, cfg config, info *clusterInfo) error {
-	name := resources.RawKubeconfigSecretName(cfg.InstanceName)
+	name := resources.RawKubeconfigSecretNameForVMI(cfg.InstanceName, cfg.ExpectedVMIUID)
 	secretsClient := kc.CoreV1().Secrets(cfg.Namespace)
 
 	secret := &corev1.Secret{
@@ -394,6 +456,7 @@ func publishRawKubeconfig(ctx context.Context, kc *kubernetes.Clientset, cfg con
 		Data: map[string][]byte{
 			resources.KubeconfigSecretKey: info.Kubeconfig,
 			resources.OCPVersionSecretKey: []byte(info.OCPVersion),
+			resources.VMIUIDSecretKey:     []byte(cfg.ExpectedVMIUID),
 		},
 	}
 
@@ -403,7 +466,10 @@ func publishRawKubeconfig(ctx context.Context, kc *kubernetes.Clientset, cfg con
 		if getErr != nil {
 			return getErr
 		}
-		existing.Data = secret.Data
+		if reflect.DeepEqual(existing.Data, secret.Data) && existing.Type == secret.Type {
+			return nil
+		}
+		existing.Data, existing.Type = secret.Data, secret.Type
 		_, err = secretsClient.Update(ctx, existing, metav1.UpdateOptions{})
 	}
 	return err

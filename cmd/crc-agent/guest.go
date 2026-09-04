@@ -24,8 +24,8 @@ limitations under the License.
 //  1. dnsmasq must start so api.crc.testing resolves inside the VM
 //     (needed for `oc` commands issued over SSH).
 //  2. The kubelet must start so the API server comes up.
-//  3. bootstrapCA must regenerate the CA and replace the bundle's stale
-//     admin client cert with a new one. This is the only step that still
+//  3. bootstrapCA installs the stable CA and admin client certificate. This is
+//     the only step that still
 //     runs oc on the guest over SSH. Typed client auth would create a
 //     circular dependency: it needs a valid cert to connect, but it needs
 //     to connect to replace the cert.
@@ -46,8 +46,6 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -57,6 +55,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 	k8syaml "sigs.k8s.io/yaml"
+
+	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
 
 // generateEd25519Key generates a fresh ed25519 keypair.
@@ -102,28 +102,19 @@ type guestResult struct {
 	// the new admin client cert injected. The SSH-tunneled typed client uses
 	// this as its TLS credential.
 	AdminKubeconfigPEM []byte
-	// CACert is the self-signed CA that bootstrapCA generates. The API server
-	// trusts this CA for verifying client certificates through the
-	// admin-kubeconfig-client-ca configmap (it signs ClientCertPEM below).
-	// It does not sign the API server's own TLS serving certificate. See
-	// ServerCAPEM for that.
-	CACert *x509.Certificate
-	// CAKey is the matching private key, kept for later use if needed.
-	CAKey *rsa.PrivateKey
-	// ClientCertPEM and ClientKeyPEM are the admin client cert and key PEM
-	// bytes, signed by CACert.
+	// ClientCertPEM and ClientKeyPEM are the mounted admin client credential.
 	ClientCertPEM []byte
 	ClientKeyPEM  []byte
 	// ServerCAPEM is the CA bundle that verifies the API server's own TLS
 	// serving certificate for the internal api.crc.testing SNI. bootstrapCA
 	// extracts it from the bundle kubeconfig's
 	// clusters[0].cluster.certificate-authority-data field, which it never
-	// modifies. This is a different trust root than CACert: it is whatever
+	// modifies. This is separate from the mounted client CA: it is whatever
 	// the CRC bundle was built with (for example kube-apiserver-lb-signer
 	// and related certs), not something crc-agent generates. Typed clients
 	// connecting to api.crc.testing (clusterclient.go) must use this as
-	// their CAData, not CACert. Conflating the two produces "certificate
-	// signed by unknown authority", because CACert never signed the
+	// their CAData, not the client CA. Conflating the two produces "certificate
+	// signed by unknown authority", because the client CA never signed the
 	// server's serving cert.
 	ServerCAPEM []byte
 }
@@ -154,7 +145,7 @@ nameserver {{ .IP }}
 //  2. Rewrite /etc/resolv.conf so the VM resolves *.crc.testing.
 //  3. Generate a new ed25519 SSH keypair and swap it onto authorized_keys.
 //  4. Start the kubelet.
-//  5. Regenerate the admin CA and client cert, then patch the cluster
+//  5. Install the stable admin CA and client cert, then patch the cluster
 //     (the CA bootstrap step; this uses oc on the guest for this one step).
 //  6. Return the new kubeconfig bytes and crypto material for the
 //     typed-client stage.
@@ -196,9 +187,9 @@ func RunGuestFixups(runner *Runner, cfg config, log logrLike) (*guestResult, err
 		return nil, fmt.Errorf("start kubelet: %w", err)
 	}
 
-	// 5. CA bootstrap: generate new CA+client cert, patch the cluster
-	log.Info("guest: regenerating admin CA and client cert (bootstrap)")
-	res, err := bootstrapCA(runner)
+	// 5. CA bootstrap: install the stable CA+client cert and patch the cluster.
+	log.Info("guest: installing stable admin CA and client cert")
+	res, err := bootstrapCA(runner, cfg.Identity)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap CA: %w", err)
 	}
@@ -340,10 +331,8 @@ func startKubelet(runner *Runner) error {
 	return nil
 }
 
-// bootstrapCA is the CA-regen bootstrap step:
-//  1. Generate a self-signed CA (crypto/x509).
-//  2. Mint a system:admin / system:masters client cert.
-//  3. Read the bundle's /opt/kubeconfig and splice in the new client cert.
+// bootstrapCA installs the management-side identity into the guest:
+//  1. Read the bundle's /opt/kubeconfig and splice in the stable client cert.
 //  4. Run `oc patch configmap admin-kubeconfig-client-ca` on the guest over
 //     SSH so the API server trusts the new CA. This is the one intentional
 //     oc-on-guest exception, matching crc's own approach: the API server
@@ -352,17 +341,7 @@ func startKubelet(runner *Runner) error {
 //
 // Ported from crc pkg/crc/machine/start.go updateKubeconfig and
 // pkg/crc/cluster/cluster.go EnsureGeneratedClientCAPresentInTheCluster.
-func bootstrapCA(runner *Runner) (*guestResult, error) {
-	// Generate CA + client cert.
-	caKey, caCert, err := SelfSignedCA()
-	if err != nil {
-		return nil, err
-	}
-	clientCertPEM, clientKeyPEM, err := ClientCertificate(caKey, caCert)
-	if err != nil {
-		return nil, err
-	}
-	caPEM := CAPem(caCert)
+func bootstrapCA(runner *Runner, identity resources.CRCIdentity) (*guestResult, error) {
 
 	// Read the bundle's admin kubeconfig from the guest, with retries. The
 	// caller started the kubelet a moment ago, and the kubelet may not have
@@ -382,7 +361,7 @@ func bootstrapCA(runner *Runner) (*guestResult, error) {
 
 	// Splice in the new client cert+key.
 	patchedKubeconfig, err := spliceClientCertIntoKubeconfig(
-		[]byte(bundleKubeconfigYAML), clientCertPEM, clientKeyPEM)
+		[]byte(bundleKubeconfigYAML), identity.ClientCert, identity.ClientPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("splicing client cert into kubeconfig: %w", err)
 	}
@@ -390,7 +369,7 @@ func bootstrapCA(runner *Runner) (*guestResult, error) {
 	// Patch admin-kubeconfig-client-ca configmap via oc on the guest.
 	// This is the only oc-on-guest call; it must happen BEFORE typed clients
 	// try to authenticate, so the API server trusts our new CA.
-	caPEMJSON, _ := json.Marshal(string(caPEM))
+	caPEMJSON, _ := json.Marshal(string(identity.ClientCA))
 	patchCmd := fmt.Sprintf(
 		`oc --kubeconfig /opt/kubeconfig patch configmap admin-kubeconfig-client-ca `+
 			`-n openshift-config --patch '{"data":{"ca-bundle.crt":%s}}'`,
@@ -429,11 +408,9 @@ func bootstrapCA(runner *Runner) (*guestResult, error) {
 
 	return &guestResult{
 		AdminKubeconfigPEM: patchedKubeconfig,
-		CACert:             caCert,
-		CAKey:              caKey,
 		ServerCAPEM:        serverCAPEM,
-		ClientCertPEM:      clientCertPEM,
-		ClientKeyPEM:       clientKeyPEM,
+		ClientCertPEM:      identity.ClientCert,
+		ClientKeyPEM:       identity.ClientPrivateKey,
 	}, nil
 }
 
