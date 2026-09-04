@@ -78,7 +78,7 @@ func newProjectionTestInstance(name string, leaseRef *corev1.LocalObjectReferenc
 			Finalizers: []string{instanceFinalizer},
 		},
 		Spec: brokerv1alpha1.ClusterInstanceSpec{
-			Type: brokerv1alpha1.TopologyCRC,
+			Type: brokerv1alpha1.TopologyHCP,
 			Template: brokerv1alpha1.ClusterTemplate{
 				OCPVersion: testOCPVersion,
 				Memory:     testMemory,

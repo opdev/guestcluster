@@ -22,6 +22,8 @@ limitations under the License.
 package resources
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -128,11 +130,15 @@ const KubeconfigSecretKey = "kubeconfig"
 // OCPVersionSecretKey is the Secret data key where the crc-agent writes the
 // observed in-guest OpenShift version, alongside the raw kubeconfig, for
 // topology=crc instances (see RawKubeconfigSecretName). The
-// management-cluster ClusterInstance controller has no direct network path
-// to the CRC guest API. It relies on the crc-agent, which reaches the guest
-// API over the hypervisor-local VM network, to report this value instead of
-// querying it directly.
+// management-cluster ClusterInstance controller uses the published API route
+// only for a readiness check. It relies on the crc-agent, which reaches the
+// guest API over the hypervisor-local VM network, to report this value.
 const OCPVersionSecretKey = "ocpVersion"
+
+// VMIUIDSecretKey is the Secret data key where crc-agent records the UID of
+// the VMI it configured. The controller uses it to reject a handoff from a
+// VMI that was deleted or replaced while the agent was still running.
+const VMIUIDSecretKey = "vmiUID"
 
 // RawKubeconfigSecretName defines the contract between the crc-agent and
 // the ClusterInstance controller for topology=crc instances. The crc-agent
@@ -147,6 +153,12 @@ func RawKubeconfigSecretName(instanceName string) string {
 	return instanceName + "-crc-raw-kubeconfig"
 }
 
+// RawKubeconfigSecretNameForVMI fences a handoff to one VMI. A stale agent
+// can only write its own Secret and cannot replace the current VMI handoff.
+func RawKubeconfigSecretNameForVMI(instanceName, vmiUID string) string {
+	return RawKubeconfigSecretName(instanceName) + "-" + vmiUID
+}
+
 // LeaseKubeconfigSecretName is the name of the Secret where the
 // ClusterLease controller copies a bound ClusterInstance's kubeconfig, in
 // the ClusterLease's own namespace. CI consumers read this Secret instead
@@ -157,15 +169,23 @@ func LeaseKubeconfigSecretName(leaseName string) string {
 	return leaseName + "-kubeconfig"
 }
 
-// CRCAgentJobName is the deterministic name of the per-instance Kubernetes
-// Job that runs the crc-agent container for a topology=crc ClusterInstance.
+// CRCAgentJobName is the deterministic name of the per-VMI Kubernetes Job
+// that runs the crc-agent container for a topology=crc ClusterInstance.
 // This is a run-to-completion Job, not a long-running Deployment. The
 // crc-agent's work is a one-shot task per VM boot: SSH into the freshly
 // booted CRC VM, run the native post-boot fixups, and publish
-// RawKubeconfigSecretName. The operator reruns this task fresh on every
-// recycle.
-func CRCAgentJobName(instanceName string) string {
-	return instanceName + "-crc-agent"
+// RawKubeconfigSecretName. The VMI hash keeps the name within the Kubernetes
+// DNS label limit when an instance name is at its maximum length.
+func CRCAgentJobName(instanceName, vmiUID string) string {
+	const suffix = "-crc-agent-"
+	const hashLength = 12
+	hash := sha256.Sum256([]byte(vmiUID))
+	uidHash := hex.EncodeToString(hash[:])[:hashLength]
+	maxPrefixLength := 63 - len(suffix) - hashLength
+	if len(instanceName) > maxPrefixLength {
+		instanceName = instanceName[:maxPrefixLength]
+	}
+	return instanceName + suffix + uidHash
 }
 
 // CRCAPIServiceName is the deterministic name of the ClusterIP Service that

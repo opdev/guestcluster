@@ -77,6 +77,9 @@ type CRCBackingStatus struct {
 	// SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
 	// post-boot fixups and kubeconfig extraction.
 	SSHEndpoint string `json:"sshEndpoint,omitempty"`
+	// VMIUID identifies the VirtualMachineInstance for which the crc-agent
+	// completed its post-boot handoff.
+	VMIUID string `json:"vmiUID,omitempty"`
 }
 
 // HyperShiftBackingStatus tracks the HostedCluster/NodePool backing a topology=hcp

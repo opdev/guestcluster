@@ -35,6 +35,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
+
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
 	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
@@ -48,8 +50,9 @@ const (
 	// (VM boot, HostedCluster provisioning) to progress.
 	requeueInterval = 20 * time.Second
 
-	conditionTypeReady           = "Ready"
-	conditionTypeVersionMismatch = "VersionMismatch"
+	conditionTypeReady             = "Ready"
+	conditionTypeVersionMismatch   = "VersionMismatch"
+	conditionTypeGuestAPIReachable = "GuestAPIReachable"
 )
 
 // ClusterInstanceReconciler reconciles a ClusterInstance object
@@ -139,14 +142,10 @@ func (r *ClusterInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Ready instances are steady state for backing-resource provisioning.
-	// Re-running reconcileCRC/reconcileHyperShift here would be harmless,
-	// because both are Get-or-Create idempotent, but wasteful, because this
-	// reconciler is now also triggered by unrelated ClusterLease changes
-	// (see SetupWithManager) only to keep the derived LeaseRef projection
-	// current. The only thing a Ready instance still needs from this
-	// reconciler is that projection update.
 	if instance.Status.Phase == brokerv1alpha1.PhaseReady {
+		if instance.Spec.Type == brokerv1alpha1.TopologyCRC {
+			return r.reconcileReadyCRC(ctx, instance)
+		}
 		return r.reconcileLeaseRefProjection(ctx, instance)
 	}
 
@@ -201,6 +200,13 @@ func (r *ClusterInstanceReconciler) reconcileLeaseRefProjection(ctx context.Cont
 }
 
 func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if result, err := r.reconcileProvisioningCRCVMI(ctx, instance); result != nil || err != nil {
+		if result == nil {
+			return ctrl.Result{}, err
+		}
+		return *result, err
+	}
+
 	pullSecretName, err := r.resolvePullSecret(ctx, instance, instance.Namespace)
 	if err != nil {
 		return r.markFailedWithReason(ctx, instance, "InvalidPullSecret", err)
@@ -228,6 +234,7 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 		VMName:         res.vmName,
 		DataVolumeName: res.dvName,
 		SSHEndpoint:    res.sshEndpoint,
+		VMIUID:         res.vmiUID,
 	}
 
 	if !res.ready {
@@ -355,22 +362,6 @@ func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *bro
 
 	if err := r.Status().Update(ctx, instance); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Ready: %w", err)
-	}
-
-	// markReady has now durably copied the raw crc-agent handoff Secret
-	// (topology=crc only) into the canonical secret above. Delete the raw
-	// secret so it does not linger as a permanent duplicate. This deletion
-	// happens only after the canonical secret and the status update both
-	// succeed, so a failure earlier in this function, if requeued and
-	// retried, never loses the only copy of the kubeconfig.
-	if instance.Spec.Type == brokerv1alpha1.TopologyCRC {
-		raw := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-			Name:      resources.RawKubeconfigSecretName(instance.Name),
-			Namespace: instance.Namespace,
-		}}
-		if err := r.deleteIfExists(ctx, raw, "consumed raw kubeconfig secret"); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	return ctrl.Result{}, nil
@@ -578,11 +569,25 @@ func (r *ClusterInstanceReconciler) instanceForLease(_ context.Context, obj clie
 	}}
 }
 
+// instanceForVMI maps the deterministically named CRC VMI to its
+// ClusterInstance. This lets the controller recover as soon as KubeVirt
+// replaces a VMI, instead of waiting for an unrelated instance update.
+func (r *ClusterInstanceReconciler) instanceForVMI(_ context.Context, obj client.Object) []reconcile.Request {
+	vmi, ok := obj.(*kubevirtv1.VirtualMachineInstance)
+	if !ok {
+		return nil
+	}
+	return []reconcile.Request{{
+		NamespacedName: client.ObjectKey{Namespace: vmi.Namespace, Name: vmi.Name},
+	}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&brokerv1alpha1.ClusterInstance{}).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.instanceForLease)).
+		Watches(&kubevirtv1.VirtualMachineInstance{}, handler.EnqueueRequestsFromMapFunc(r.instanceForVMI)).
 		Named("clusterinstance").
 		Complete(r)
 }
