@@ -113,13 +113,14 @@ Two controllers implement this:
     below). The controller also creates a KubeVirt `VirtualMachine` wired
     to that volume. Once the VM's `VirtualMachineInstance` reports an IP,
     the controller creates a run-to-completion **crc-agent Job**
-    (`<instance>-crc-agent`). This Job connects to the VM over SSH as user
+    (`<instance>-crc-agent-<vmi-hash>`). This Job connects to the VM over SSH as user
     `core`, using `template.bundleSSHKeyRef`. It runs every post-boot
     fixup natively, with no external orchestration binary (see
     [crc-agent](#crc-agent-cmdcrc-agent) below). The controller waits for
     the Job to publish the raw kubeconfig Secret
-    (`<instance>-crc-raw-kubeconfig`). Only then does it mark the instance
-    `Ready`. KubeVirt is the only hypervisor involved. No nested
+    (`<instance>-crc-raw-kubeconfig-<vmi-uid>`). It verifies the external API
+    before it marks the instance `Ready`, and retains the result for recovery.
+    KubeVirt is the only hypervisor involved. No nested
     virtualization is required.
   - `hcp`: The controller creates a HyperShift `HostedCluster` with
     `platform: KubeVirt`. It sets `controllerAvailabilityPolicy` from
@@ -414,7 +415,7 @@ For each `ClusterInstance` of topology `crc`, once its
 `VirtualMachineInstance` reports an IP, `ClusterInstanceReconciler`
 ensures a `Service` and passthrough `Route` that expose the guest API
 externally (see below). It then creates a run-to-completion **Kubernetes
-Job** (`<instance>-crc-agent`, see `internal/resources.BuildCRCAgentJob`)
+Job** (`<instance>-crc-agent-<vmi-hash>`, see `internal/resources.BuildCRCAgentJob`)
 that runs this binary. The binary:
 
 1. Waits for the VM's SSH endpoint (port 22) to accept connections. It
@@ -447,14 +448,16 @@ that runs this binary. The binary:
    `https://<CRC_API_HOSTNAME>:443`. It embeds the same self-signed
    certificate as the trusted CA. It derives the cluster's OpenShift
    version from the typed `ClusterVersion` object.
-6. Publishes both values into `<instance>-crc-raw-kubeconfig`, with keys
-   `kubeconfig` and `ocpVersion`. This Secret forms the **only** contract
+6. Publishes both values and the configured VMI UID into
+	`<instance>-crc-raw-kubeconfig-<vmi-uid>`, with keys `kubeconfig`,
+	`ocpVersion`, and `vmiUID`. This Secret forms the **only** contract
    between crc-agent and `ClusterInstanceReconciler`.
    `ClusterInstanceReconciler` reads this Secret and never connects over
    SSH itself.
 
 `BuildCRCAgentJob` sets configuration through environment variables:
 `INSTANCE_NAME`, `INSTANCE_NAMESPACE`, `CRC_SSH_HOST` (the VM's IP),
+`CRC_VMI_UID` (the VMI identity),
 `CRC_API_HOSTNAME` (the externally routable Route host), and
 `CRC_SSH_KEY_PATH` and `PULL_SECRET_PATH` (mounted Secret file paths).
 
@@ -524,8 +527,8 @@ variable, the other a runtime environment variable, read through
 `os.Getenv` by both `ClusterInstanceReconciler` and `CRCBundleReconciler`.
 
 For the crc-agent Job, the image must run as the `crc-agent`
-`ServiceAccount` (`config/rbac/crc_agent_*.yaml`), scoped to `secrets`
-access in the operator's namespace only. For the bundle-prep Job, it must
+`ServiceAccount` (`config/rbac/crc_agent_*.yaml`), scoped to `secrets` and
+its `VirtualMachineInstance` in the operator's namespace. For the bundle-prep Job, it must
 run as the `bundle-prep` `ServiceAccount`, scoped to `secrets` and
 `configmaps` access in the operator's namespace only.
 

@@ -105,15 +105,15 @@ func CRCAgentPullSecretPath() string {
 // image is the crc-agent container image to run (see CRCAgentImageEnvVar).
 // apiHostname is the externally routable hostname for which the
 // ClusterInstance controller already provisioned a passthrough Route (see
-// BuildCRCAPIRoute); the crc-agent uses it to mint the guest API server's
-// external-facing serving certificate and to rewrite the published
+// BuildCRCAPIRoute); the crc-agent uses it to select the mounted guest API
+// server certificate and to rewrite the published
 // kubeconfig's server URL. pullSecretName is the name (in
 // instance.Namespace) of the Secret holding the pull-secret to inject into
 // the guest cluster. The caller resolves it, either from the template's
 // explicit PullSecretRef, or from a materialized copy of the management
 // cluster's own default pull secret (see
 // ClusterInstanceReconciler.resolvePullSecret).
-func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, sshKeySecretName, bundleKeyDataKey, image, apiHostname, pullSecretName string) *batchv1.Job {
+func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, sshKeySecretName, bundleKeyDataKey, identitySecretName, image, apiHostname, pullSecretName string) *batchv1.Job {
 	labels := CommonLabels(instance)
 
 	backoffLimit := int32(2)
@@ -121,7 +121,7 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, sshKeySecr
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      CRCAgentJobName(instance.Name),
+			Name:      CRCAgentJobName(instance.Name, vmiUID),
 			Namespace: instance.Namespace,
 			Labels:    labels,
 		},
@@ -143,13 +143,16 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, sshKeySecr
 								{Name: "INSTANCE_NAME", Value: instance.Name},
 								{Name: "INSTANCE_NAMESPACE", Value: instance.Namespace},
 								{Name: "CRC_SSH_HOST", Value: vmIP},
+								{Name: "CRC_VMI_UID", Value: vmiUID},
 								{Name: "CRC_SSH_KEY_PATH", Value: CRCAgentSSHKeyPath()},
+								{Name: "CRC_IDENTITY_PATH", Value: "/etc/crc-agent/identity"},
 								{Name: "PULL_SECRET_PATH", Value: CRCAgentPullSecretPath()},
 								{Name: CRCAPIHostnameEnvVar, Value: apiHostname},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "pull-secret", MountPath: crcAgentPullSecretMountPath, ReadOnly: true},
 								{Name: "bundle-ssh-key", MountPath: crcAgentSSHKeyMountPath, ReadOnly: true},
+								{Name: "identity", MountPath: "/etc/crc-agent/identity", ReadOnly: true},
 							},
 						},
 					},
@@ -172,6 +175,10 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, sshKeySecr
 									},
 								},
 							},
+						},
+						{
+							Name:         "identity",
+							VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: identitySecretName}},
 						},
 					},
 				},

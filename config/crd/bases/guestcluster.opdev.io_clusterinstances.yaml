@@ -357,6 +357,11 @@ spec:
                     description: VMName is the name of the KubeVirt VirtualMachine
                       running the CRC/SNO bundle.
                     type: string
+                  vmiUID:
+                    description: |-
+                      VMIUID identifies the VirtualMachineInstance for which the crc-agent
+                      completed its post-boot handoff.
+                    type: string
                 type: object
               hyperShift:
                 description: HyperShift holds backing-object references for topology=hcp

@@ -8,14 +8,18 @@ metadata:
   namespace: system
 rules:
 - apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachineinstances
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - ""
   resources:
   - secrets
   verbs:
   - get
-  - list
-  - watch
   - create
   - update
-  - patch
-  - delete

@@ -36,6 +36,7 @@ _Appears in:_
 | `vmName` _string_ | VMName is the name of the KubeVirt VirtualMachine running the CRC/SNO bundle. |  |  |
 | `dataVolumeName` _string_ | DataVolumeName is the CDI DataVolume providing the VM's root disk. |  |  |
 | `sshEndpoint` _string_ | SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for<br />post-boot fixups and kubeconfig extraction. |  |  |
+| `vmiUID` _string_ | VMIUID identifies the VirtualMachineInstance for which the crc-agent<br />completed its post-boot handoff. |  |  |
 
 
 #### CRCBundle
