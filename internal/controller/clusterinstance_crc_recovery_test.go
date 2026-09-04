@@ -44,6 +44,7 @@ import (
 const (
 	recoveryInstanceName = "crc-recovery"
 	oldAPIEndpoint       = "https://old.example.test"
+	recoveryVMIUID       = "vmi-uid"
 )
 
 func TestCRCVMIDChanged(t *testing.T) {
@@ -127,11 +128,11 @@ func TestReconcileReadyCRCRequeuesHealthCheck(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "crc-ready", Namespace: testNamespace},
 		Status: brokerv1alpha1.ClusterInstanceStatus{
 			Phase: brokerv1alpha1.PhaseReady,
-			CRC:   &brokerv1alpha1.CRCBackingStatus{VMIUID: "vmi-uid"},
+			CRC:   &brokerv1alpha1.CRCBackingStatus{VMIUID: recoveryVMIUID},
 		},
 	}
 	vmi := &kubevirtv1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("vmi-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID(recoveryVMIUID)},
 		Status:     kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running},
 	}
 	published := &corev1.Secret{
@@ -170,11 +171,11 @@ func TestReconcileReadyCRCRemovesLeaseEligibilityWhenHealthCheckFails(t *testing
 			Phase:               brokerv1alpha1.PhaseReady,
 			APIEndpoint:         oldAPIEndpoint,
 			KubeconfigSecretRef: corev1.LocalObjectReference{Name: resources.KubeconfigSecretName(recoveryInstanceName)},
-			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: "vmi-uid"},
+			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: recoveryVMIUID},
 		},
 	}
 	vmi := &kubevirtv1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("vmi-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID(recoveryVMIUID)},
 		Status:     kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running},
 	}
 	published := &corev1.Secret{
@@ -182,7 +183,7 @@ func TestReconcileReadyCRCRemovesLeaseEligibilityWhenHealthCheckFails(t *testing
 		Data:       map[string][]byte{resources.KubeconfigSecretKey: []byte("invalid")},
 	}
 	raw := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: resources.RawKubeconfigSecretNameForVMI(instance.Name, "vmi-uid"), Namespace: instance.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: resources.RawKubeconfigSecretNameForVMI(instance.Name, recoveryVMIUID), Namespace: instance.Namespace},
 		Data:       map[string][]byte{resources.KubeconfigSecretKey: []byte("retained")},
 	}
 	c := newCRCRecoveryFakeClient(t, instance, vmi, published, raw)
@@ -228,18 +229,18 @@ func TestReconcileReadyCRCDoesNotRestoreKubeconfigBeforeHealthCheck(t *testing.T
 			Phase:               brokerv1alpha1.PhaseReady,
 			APIEndpoint:         oldAPIEndpoint,
 			KubeconfigSecretRef: corev1.LocalObjectReference{Name: resources.KubeconfigSecretName(recoveryInstanceName)},
-			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: "vmi-uid"},
+			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: recoveryVMIUID},
 		},
 	}
 	vmi := &kubevirtv1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("vmi-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID(recoveryVMIUID)},
 		Status:     kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running},
 	}
 	raw := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: resources.RawKubeconfigSecretNameForVMI(instance.Name, "vmi-uid"), Namespace: instance.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: resources.RawKubeconfigSecretNameForVMI(instance.Name, recoveryVMIUID), Namespace: instance.Namespace},
 		Data: map[string][]byte{
 			resources.KubeconfigSecretKey: []byte("invalid"),
-			resources.VMIUIDSecretKey:     []byte("vmi-uid"),
+			resources.VMIUIDSecretKey:     []byte(recoveryVMIUID),
 		},
 	}
 	c := newCRCRecoveryFakeClient(t, instance, vmi, raw)

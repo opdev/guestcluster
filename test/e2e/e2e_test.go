@@ -17,6 +17,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -48,6 +49,10 @@ const metricsRoleBindingName = "guestcluster-operator-metrics-binding"
 // it does not, so `make deploy` fails when it applies the RBAC objects in
 // config/openshift-config-rbac. See ClusterInstanceReconciler.resolvePullSecret.
 const openshiftConfigNamespace = "openshift-config"
+
+const crcRecoveryNamespace = "crc-recovery-e2e"
+
+const crcRecoveryInstanceName = "crc-vmi-recovery"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -87,18 +92,35 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
+		By("installing synthetic CRC backing CRDs for recovery tests")
+		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/vmi-crd.yaml")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install VirtualMachineInstance CRD")
+
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
+	// Remove custom resources while the controller is still running. CRD deletion
+	// waits for custom-resource finalizers.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
+
+		By("removing the CRC recovery instance before undeploying the controller-manager")
+		cmd = exec.Command("kubectl", "delete", "clusterinstance", crcRecoveryInstanceName,
+			"-n", crcRecoveryNamespace, "--ignore-not-found", "--wait=true", "--timeout=2m")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to remove CRC recovery instance")
+
+		By("removing the CRC recovery namespace before uninstalling CRDs")
+		cmd = exec.Command("kubectl", "delete", "namespace", crcRecoveryNamespace,
+			"--ignore-not-found", "--wait=true", "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to remove CRC recovery namespace")
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
@@ -106,6 +128,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("uninstalling CRDs")
 		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+
+		By("removing synthetic CRC backing CRDs")
+		cmd = exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/vmi-crd.yaml", "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
 		By("removing manager namespace")
@@ -124,8 +150,21 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
+			// The recovery test restarts the controller, so refresh its pod name
+			// before collecting diagnostics.
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}"+
+					"{{ .metadata.name }}{{ \"\\n\" }}{{ end }}{{ end }}",
+				"-n", namespace)
+			if podOutput, err := utils.Run(cmd); err == nil {
+				podNames := utils.GetNonEmptyLines(podOutput)
+				if len(podNames) == 1 {
+					controllerPodName = podNames[0]
+				}
+			}
+
 			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			cmd = exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
@@ -284,6 +323,150 @@ var _ = Describe("Manager", Ordered, func() {
 			))
 		})
 
+		It("should invalidate CRC handoff after VMI replacement", func() {
+			By("creating an isolated namespace and readiness identity")
+			cmd := exec.Command("kubectl", "create", "namespace", crcRecoveryNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "create", "serviceaccount", "crc-readyz", "-n", crcRecoveryNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "create", "clusterrole", "crc-readyz", "--verb=get", "--non-resource-url=/readyz")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(deleteResource, "clusterrole", "crc-readyz")
+			cmd = exec.Command("kubectl", "create", "clusterrolebinding", "crc-readyz",
+				"--clusterrole=crc-readyz", fmt.Sprintf("--serviceaccount=%s:crc-readyz", crcRecoveryNamespace))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(deleteResource, "clusterrolebinding", "crc-readyz")
+			cmd = exec.Command("kubectl", "create", "token", "crc-readyz", "-n", crcRecoveryNamespace)
+			token, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("stopping the controller while creating the synthetic Ready CRC instance")
+			cmd = exec.Command("kubectl", "scale", "deployment",
+				"guestcluster-operator-controller-manager", "-n", namespace, "--replicas=0")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "rollout", "status",
+				"deployment/guestcluster-operator-controller-manager", "-n", namespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "scale", "deployment",
+					"guestcluster-operator-controller-manager", "-n", namespace, "--replicas=1")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("creating a Ready CRC instance with its first VMI")
+			instanceName := crcRecoveryInstanceName
+			Expect(applyManifest(fmt.Sprintf(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec: {}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %[1]s-pull-secret
+  namespace: %[2]s
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: e30=
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %[1]s-bundle-ssh-key
+  namespace: %[2]s
+data:
+  id_ecdsa: dGVzdA==
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %[1]s-kubeconfig
+  namespace: %[2]s
+data:
+  kubeconfig: %s
+---
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  type: crc
+  template:
+    ocpVersion: "4.16.0"
+    memory: 16Gi
+    cores: 4
+    rootVolumeSize: 80Gi
+    releaseImage: https://example.test/crc.qcow2
+    pullSecretRef:
+      name: %[1]s-pull-secret
+    bundleSSHKeyRef:
+      name: %[1]s-bundle-ssh-key
+`, instanceName, crcRecoveryNamespace,
+				base64.StdEncoding.EncodeToString([]byte(readyzKubeconfig(token)))))).To(Succeed())
+
+			oldVMIUID := resourceField("virtualmachineinstance", instanceName, "{.metadata.uid}")
+			Expect(oldVMIUID).NotTo(BeEmpty())
+			vmiStatus := `{"status":{"phase":"Running"}}`
+			cmd = exec.Command("kubectl", "patch", "virtualmachineinstance", instanceName, "-n",
+				crcRecoveryNamespace, "--subresource=status", "--type=merge", "-p", vmiStatus)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			status := fmt.Sprintf(`{"status":{"phase":"Ready","apiEndpoint":"https://kubernetes.default.svc",
+"kubeconfigSecretRef":{"name":"%[1]s-kubeconfig"},"crc":{"vmName":"%[1]s",
+"dataVolumeName":"%[1]s-rootdisk","vmiUID":"%[2]s"}}}`, instanceName, oldVMIUID)
+			cmd = exec.Command("kubectl", "patch", "clusterinstance", instanceName, "-n",
+				crcRecoveryNamespace, "--subresource=status", "--type=merge", "-p", status)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("resuming the controller")
+			cmd = exec.Command("kubectl", "scale", "deployment",
+				"guestcluster-operator-controller-manager", "-n", namespace, "--replicas=1")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "rollout", "status",
+				"deployment/guestcluster-operator-controller-manager", "-n", namespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("replacing the VMI")
+			cmd = exec.Command("kubectl", "delete", "virtualmachineinstance", instanceName,
+				"-n", crcRecoveryNamespace, "--wait=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating the replacement VMI")
+			manifest := fmt.Sprintf("apiVersion: kubevirt.io/v1\nkind: VirtualMachineInstance\nmetadata:\n"+
+				"  name: %s\n  namespace: %s\nspec: {}\n", instanceName, crcRecoveryNamespace)
+			Expect(applyManifest(manifest)).To(Succeed())
+			Expect(resourceField("virtualmachineinstance", instanceName, "{.metadata.uid}")).
+				NotTo(Equal(oldVMIUID))
+			cmd = exec.Command("kubectl", "patch", "virtualmachineinstance", instanceName, "-n",
+				crcRecoveryNamespace, "--subresource=status", "--type=merge", "-p", vmiStatus)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for stale CRC handoff state to be removed")
+			Eventually(func(g Gomega) {
+				g.Expect(resourceField("clusterinstance", instanceName, "{.status.phase}")).
+					To(Equal("Provisioning"))
+				g.Expect(resourceField("clusterinstance", instanceName, "{.status.kubeconfigSecretRef.name}")).
+					To(BeEmpty())
+				g.Expect(resourceExists("secret", instanceName+"-kubeconfig", crcRecoveryNamespace)).To(BeFalse())
+			}).Should(Succeed())
+		})
+
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
@@ -346,6 +529,60 @@ func getMetricsOutput() string {
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
 	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 	return metricsOutput
+}
+
+func applyManifest(manifest string) error {
+	file, err := os.CreateTemp("", "guestcluster-e2e-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(file.Name()) }()
+	if _, err := file.WriteString(manifest); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	_, err = utils.Run(exec.Command("kubectl", "apply", "-f", file.Name()))
+	return err
+}
+
+func resourceField(resource, name, jsonPath string) string {
+	cmd := exec.Command("kubectl", "get", resource, name, "-n", crcRecoveryNamespace, "-o", "jsonpath="+jsonPath)
+	output, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return output
+}
+
+func resourceExists(resource, name, namespace string) bool {
+	cmd := exec.Command("kubectl", "get", resource, name, "-n", namespace)
+	_, err := utils.Run(cmd)
+	return err == nil
+}
+
+func deleteResource(resource, name string) {
+	_, _ = utils.Run(exec.Command("kubectl", "delete", resource, name, "--ignore-not-found"))
+}
+
+func readyzKubeconfig(token string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://kubernetes.default.svc
+    insecure-skip-tls-verify: true
+  name: management
+contexts:
+- context:
+    cluster: management
+    user: readyz
+  name: management
+current-context: management
+users:
+- name: readyz
+  user:
+    token: %s
+`, token)
 }
 
 // tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
