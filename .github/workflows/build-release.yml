@@ -1,0 +1,129 @@
+name: Build Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    name: Build and push release images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          cache: false
+          go-version-file: go.mod
+
+      - name: Set release and registry tags
+        id: set-release-and-registry-tags
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IMAGE_LOCATION: ${{ secrets.IMAGE_REGISTRY }}
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "The release tag must be a semantic version, with an optional leading v: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if [[ ! "${IMAGE_LOCATION}" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._-]+)+$ ]]; then
+            echo "IMAGE_REGISTRY must be a registry and repository path, for example quay.io/opdev" >&2
+            exit 1
+          fi
+          {
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+            echo "BUNDLE_VERSION=${RELEASE_TAG#v}"
+          } >> "${GITHUB_ENV}"
+          echo "registry_host=${IMAGE_LOCATION%%/*}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build manager image
+        id: build-manager-image
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          image: guestcluster-operator
+          tags: ${{ github.event.release.tag_name }}
+          dockerfiles: |
+            ./Dockerfile
+
+      - name: Push manager image
+        id: push-manager-image
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
+        with:
+          image: guestcluster-operator
+          tags: ${{ steps.build-manager-image.outputs.tags }}
+          registry: ${{ secrets.IMAGE_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build CRC agent image
+        id: build-crc-agent-image
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          image: guestcluster-operator-crc-agent
+          tags: ${{ github.event.release.tag_name }}
+          dockerfiles: |
+            ./Dockerfile.crc-agent
+
+      - name: Push CRC agent image
+        id: push-crc-agent-image
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
+        with:
+          image: guestcluster-operator-crc-agent
+          tags: ${{ steps.build-crc-agent-image.outputs.tags }}
+          registry: ${{ secrets.IMAGE_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Log in to image registry
+        uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252 # v2.0
+        with:
+          registry: ${{ steps.set-release-and-registry-tags.outputs.registry_host }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Generate bundle
+        env:
+          MANAGER_IMAGE: ${{ secrets.IMAGE_REGISTRY }}/guestcluster-operator@${{ steps.push-manager-image.outputs.digest }}
+          CRC_AGENT_IMAGE: ${{ secrets.IMAGE_REGISTRY }}/guestcluster-operator-crc-agent@${{ steps.push-crc-agent-image.outputs.digest }}
+        run: |
+          VERSION="${BUNDLE_VERSION}" \
+          USE_IMAGE_DIGESTS=true \
+          IMG="${MANAGER_IMAGE}" \
+          CRC_AGENT_IMG="${CRC_AGENT_IMAGE}" \
+          make bundle
+
+      - name: Build bundle image
+        id: build-bundle-image
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          image: guestcluster-operator-bundle
+          tags: ${{ github.event.release.tag_name }}
+          dockerfiles: |
+            ./bundle.Dockerfile
+
+      - name: Push bundle image
+        id: push-bundle-image
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
+        with:
+          image: guestcluster-operator-bundle
+          tags: ${{ steps.build-bundle-image.outputs.tags }}
+          registry: ${{ secrets.IMAGE_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Print image paths
+        run: |
+          echo "Manager image pushed to ${MANAGER_IMAGE_PATHS}"
+          echo "CRC agent image pushed to ${CRC_AGENT_IMAGE_PATHS}"
+          echo "Bundle image pushed to ${BUNDLE_IMAGE_PATHS}"
+        env:
+          MANAGER_IMAGE_PATHS: ${{ steps.push-manager-image.outputs.registry-paths }}
+          CRC_AGENT_IMAGE_PATHS: ${{ steps.push-crc-agent-image.outputs.registry-paths }}
+          BUNDLE_IMAGE_PATHS: ${{ steps.push-bundle-image.outputs.registry-paths }}

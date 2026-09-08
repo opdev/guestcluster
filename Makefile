@@ -34,9 +34,10 @@ IMAGE_TAG_BASE ?= opdev.io/guestcluster-operator
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+BUNDLE_CSV ?= bundle/manifests/guestcluster-operator.clusterserviceversion.yaml
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
-BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
+BUNDLE_GEN_FLAGS ?= -q --overwrite --version "$(VERSION)" $(BUNDLE_METADATA_OPTS)
 
 # USE_IMAGE_DIGESTS defines if images are resolved via tags or digests
 # You can enable this value if you would like to use SHA Based Digests
@@ -343,9 +344,9 @@ endif
 
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
-	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	$(OPERATOR_SDK) generate kustomize manifests --interactive=false -q
+	tmpdir="$$(mktemp -d)"; trap 'rm -rf "$$tmpdir"' EXIT; cp -R config "$$tmpdir/config"; printf '%s\n' 'apiVersion: apps/v1' 'kind: Deployment' 'metadata:' '  name: controller-manager' 'spec:' '  template:' '    spec:' '      containers:' '      - name: manager' '        env:' '        - name: CRC_AGENT_IMAGE' "          value: $(CRC_AGENT_IMG)" > "$$tmpdir/config/manifests/crc-agent-image-patch.yaml"; (cd "$$tmpdir/config/manager" && $(KUSTOMIZE) edit set image controller=$(IMG)); (cd "$$tmpdir/config/manifests" && $(KUSTOMIZE) edit add patch --path crc-agent-image-patch.yaml --group apps --version v1 --kind Deployment --name controller-manager); $(KUSTOMIZE) build "$$tmpdir/config/manifests" | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	hack/add-bundle-related-image.sh "$(KUSTOMIZE)" "$(BUNDLE_CSV)" "$(CRC_AGENT_IMG)" "$(USE_IMAGE_DIGESTS)"
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build
