@@ -1,0 +1,14 @@
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+spec: {}
+status:
+  observedGeneration: 1
+  conditions:
+  - type: Available
+    status: "True"
+  - type: Progressing
+    status: "False"
+  - type: Degraded
+    status: "False"

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,7 +59,8 @@ const (
 // ClusterInstanceReconciler reconciles a ClusterInstance object
 type ClusterInstanceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterinstances,verbs=get;list;watch;create;update;patch;delete
@@ -80,6 +82,10 @@ type ClusterInstanceReconciler struct {
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes/custom-host,verbs=create;update
 // +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get
+// +kubebuilder:rbac:groups=hco.kubevirt.io,resources=hyperconvergeds,verbs=get;list
+// +kubebuilder:rbac:groups=multicluster.openshift.io,resources=multiclusterengines,verbs=get;list
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
 
 // Reconcile drives a ClusterInstance through Provisioning -> Ready. It
 // delegates the actual creation and inspection of backing objects (KubeVirt
@@ -142,6 +148,17 @@ func (r *ClusterInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
+	if instance.Status.Phase != brokerv1alpha1.PhaseFailed &&
+		(instance.Spec.Type == brokerv1alpha1.TopologyCRC ||
+			(instance.Spec.Type == brokerv1alpha1.TopologyHCP && instance.Status.Phase != brokerv1alpha1.PhaseReady)) {
+		if result, err := r.gatePlatformOperations(ctx, instance); result != nil || err != nil {
+			if result == nil {
+				return ctrl.Result{}, err
+			}
+			return *result, err
+		}
+	}
+
 	if instance.Status.Phase == brokerv1alpha1.PhaseReady {
 		if instance.Spec.Type == brokerv1alpha1.TopologyCRC {
 			return r.reconcileReadyCRC(ctx, instance)
@@ -157,6 +174,63 @@ func (r *ClusterInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	default:
 		return r.markFailed(ctx, instance, fmt.Errorf("unknown topology %q", instance.Spec.Type))
 	}
+}
+
+func (r *ClusterInstanceReconciler) gatePlatformOperations(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (*ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
+	conditions := []platformCondition{r.checkHyperConverged(ctx)}
+	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
+		conditions = append(conditions, r.checkMultiClusterEngine(ctx))
+	}
+
+	ready := true
+	for _, condition := range conditions {
+		condition.condition.ObservedGeneration = instance.Generation
+		apimeta.SetStatusCondition(&instance.Status.Conditions, condition.condition)
+		ready = ready && condition.ready
+	}
+	instance.Status.ObservedGeneration = instance.Generation
+	if !ready {
+		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+		apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             firstBlockedReason(conditions),
+			Message:            "Platform dependencies are not ready",
+			ObservedGeneration: instance.Generation,
+		})
+		if err := r.updatePlatformStatus(ctx, instance, previousStatus); err != nil {
+			return nil, err
+		}
+		return &ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
+
+	if err := r.updatePlatformStatus(ctx, instance, previousStatus); err != nil {
+		return nil, err
+	}
+	if !equality.Semantic.DeepEqual(*previousStatus, instance.Status) {
+		return &ctrl.Result{}, nil
+	}
+	return nil, nil
+}
+
+func firstBlockedReason(conditions []platformCondition) string {
+	for _, condition := range conditions {
+		if !condition.ready {
+			return condition.condition.Reason
+		}
+	}
+	return "OperandNotReady"
+}
+
+func (r *ClusterInstanceReconciler) updatePlatformStatus(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus) error {
+	if equality.Semantic.DeepEqual(*previousStatus, instance.Status) {
+		return nil
+	}
+	if err := r.Status().Update(ctx, instance); err != nil {
+		return fmt.Errorf("updating platform readiness status: %w", err)
+	}
+	return nil
 }
 
 // reconcileLeaseRefProjection maintains Status.LeaseRef as a read-only,

@@ -96,6 +96,13 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/vmi-crd.yaml")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install VirtualMachineInstance CRD")
+		cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+			"crd/hyperconvergeds.hco.kubevirt.io", "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to establish HyperConverged CRD")
+		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/healthy-hco.yaml")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create healthy HyperConverged")
 
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
@@ -131,6 +138,8 @@ var _ = Describe("Manager", Ordered, func() {
 		_, _ = utils.Run(cmd)
 
 		By("removing synthetic CRC backing CRDs")
+		cmd = exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/healthy-hco.yaml", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
 		cmd = exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/vmi-crd.yaml", "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
@@ -245,6 +254,7 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
+			DeferCleanup(deleteResource, "clusterrolebinding", metricsRoleBindingName)
 
 			By("validating that the metrics service is available")
 			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
@@ -439,6 +449,13 @@ spec:
 				"deployment/guestcluster-operator-controller-manager", "-n", namespace, "--timeout=2m")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "lease", "28494864.opdev.io", "-n", namespace,
+					"-o", "jsonpath={.spec.holderIdentity}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+			}).Should(Succeed())
 
 			By("replacing the VMI")
 			cmd = exec.Command("kubectl", "delete", "virtualmachineinstance", instanceName,

@@ -1,6 +1,27 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: hyperconvergeds.hco.kubevirt.io
+spec:
+  group: hco.kubevirt.io
+  names:
+    kind: HyperConverged
+    listKind: HyperConvergedList
+    plural: hyperconvergeds
+    singular: hyperconverged
+  scope: Cluster
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: virtualmachineinstances.kubevirt.io
 spec:
   group: kubevirt.io
