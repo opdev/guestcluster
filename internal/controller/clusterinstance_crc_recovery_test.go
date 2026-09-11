@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
@@ -418,6 +419,68 @@ func TestCheckCRCKubeconfigHandoffRejectsDifferentVMI(t *testing.T) {
 	}
 }
 
+func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
+	for _, reason := range []string{batchv1.JobReasonBackoffLimitExceeded, batchv1.JobReasonDeadlineExceeded} {
+		t.Run(reason, func(t *testing.T) {
+			ctx := context.Background()
+			instance := &brokerv1alpha1.ClusterInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: recoveryInstanceName, Namespace: testNamespace},
+				Spec: brokerv1alpha1.ClusterInstanceSpec{
+					Type: brokerv1alpha1.TopologyCRC,
+					Template: brokerv1alpha1.ClusterTemplate{
+						PullSecretRef:   corev1.LocalObjectReference{Name: "pull-secret"},
+						BundleSSHKeyRef: &corev1.LocalObjectReference{Name: "bundle-ssh-key"},
+						Memory:          "16Gi",
+						Cores:           4,
+					},
+				},
+			}
+			vmi := &kubevirtv1.VirtualMachineInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID(recoveryVMIUID)},
+				Status: kubevirtv1.VirtualMachineInstanceStatus{
+					Phase:      kubevirtv1.Running,
+					Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{{IP: "192.0.2.1"}},
+				},
+			}
+			vm := &kubevirtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: resources.VMName(instance.Name), Namespace: instance.Namespace},
+				Status:     kubevirtv1.VirtualMachineStatus{Ready: true},
+			}
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, recoveryVMIUID), Namespace: instance.Namespace},
+				Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: reason,
+				}}},
+			}
+			pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pull-secret", Namespace: instance.Namespace}, Data: map[string][]byte{resources.PullSecretDataKey: []byte("pull")}}
+			sshSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bundle-ssh-key", Namespace: instance.Namespace}, Data: map[string][]byte{"id_rsa": []byte("key")}}
+			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "cluster"}, Spec: configv1.IngressSpec{Domain: "apps.example.test"}}
+			c := newCRCRecoveryFakeClient(t, instance, vm, vmi, job, pullSecret, sshSecret, ingress)
+			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+
+			if _, err := r.reconcileCRC(ctx, instance); err == nil {
+				t.Fatal("expected crc-agent Job failure")
+			}
+
+			got := &brokerv1alpha1.ClusterInstance{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(instance), got); err != nil {
+				t.Fatalf("getting instance: %v", err)
+			}
+			if got.Status.Phase != brokerv1alpha1.PhaseFailed {
+				t.Fatalf("phase = %s, want Failed", got.Status.Phase)
+			}
+			condition := apimeta.FindStatusCondition(got.Status.Conditions, conditionTypeReady)
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "ReconcileError" {
+				t.Fatalf("expected Ready=False with ReconcileError, got %+v", condition)
+			}
+			wantMessage := fmt.Sprintf("crc-agent Job %s failed: %s", job.Name, reason)
+			if condition.Message != wantMessage {
+				t.Fatalf("condition message = %q", condition.Message)
+			}
+		})
+	}
+}
+
 func newCRCRecoveryFakeClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -435,6 +498,9 @@ func newCRCRecoveryFakeClient(t *testing.T, objects ...client.Object) client.Cli
 	}
 	if err := routev1.AddToScheme(s); err != nil {
 		t.Fatalf("adding OpenShift Route scheme: %v", err)
+	}
+	if err := configv1.AddToScheme(s); err != nil {
+		t.Fatalf("adding OpenShift Config scheme: %v", err)
 	}
 	return fake.NewClientBuilder().
 		WithScheme(s).

@@ -230,19 +230,22 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 
 	// Ensure the crc-agent Job exists. It SSHes into the VM and runs the
 	// post-boot fixups natively (see cmd/crc-agent). This call is
-	// idempotent: once created, the Job runs to completion, or exhausts its
-	// BackoffLimit, on its own.
+	// idempotent: once created, the Job runs to completion or reaches a terminal
+	// failure condition on its own.
 	job := resources.BuildCRCAgentJob(instance, vmIP, res.vmiUID, sshSecretName, sshDataKey, identitySecretName, crcAgentImage(), apiHost, pullSecretName)
 	if err := controllerutil.SetControllerReference(instance, job, r.Scheme); err != nil {
 		return res, fmt.Errorf("setting owner reference on crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
-	if err := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, &batchv1.Job{}); apierrors.IsNotFound(err) {
+	existingJob := &batchv1.Job{}
+	if err := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, existingJob); apierrors.IsNotFound(err) {
 		if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
 			return res, fmt.Errorf("creating crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
 		log.Info("created crc-agent Job", "job", job.Name, "vmIP", vmIP)
 	} else if err != nil {
 		return res, fmt.Errorf("getting crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
+	} else if err := checkCRCAgentJobFailure(existingJob); err != nil {
+		return res, err
 	}
 
 	// Once the crc-agent Job completes successfully, it publishes the raw
@@ -264,6 +267,15 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 	res.kubeconfig = kubeconfig
 	res.ocpVersion = ocpVersion
 	return res, nil
+}
+
+func checkCRCAgentJobFailure(job *batchv1.Job) error {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			return fmt.Errorf("crc-agent Job %s failed: %s", job.Name, condition.Reason)
+		}
+	}
+	return nil
 }
 
 // ensureCRCIdentity creates the credentials that stay stable while this
