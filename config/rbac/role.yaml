@@ -37,6 +37,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+- apiGroups:
   - batch
   resources:
   - jobs
@@ -110,6 +122,13 @@ rules:
   - patch
   - update
 - apiGroups:
+  - hco.kubevirt.io
+  resources:
+  - hyperconvergeds
+  verbs:
+  - get
+  - list
+- apiGroups:
   - hypershift.openshift.io
   resources:
   - hostedclusters
@@ -142,6 +161,13 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - multicluster.openshift.io
+  resources:
+  - multiclusterengines
+  verbs:
+  - get
+  - list
 - apiGroups:
   - route.openshift.io
   resources:
