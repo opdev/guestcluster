@@ -35,6 +35,7 @@ package controller
 // so every spec below is registered once per entry in allVerificationTopologies.
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -50,6 +51,19 @@ import (
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
 	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
+
+type failOnceDeleteClient struct {
+	client.Client
+	failNextDelete bool
+}
+
+func (c *failOnceDeleteClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if c.failNextDelete {
+		c.failNextDelete = false
+		return fmt.Errorf("injected delete failure")
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
 
 var _ = func() bool {
 	for _, topology := range allVerificationTopologies {
@@ -219,6 +233,63 @@ func registerClusterLeaseVerificationSpecs(topology brokerv1alpha1.ClusterTopolo
 
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claimed instance should be deleted as part of TTL-driven release")
+		})
+
+		It("retries TTL cleanup after a delete failure", func() {
+			inst := newReadyInstance("verify-ttl-retry-inst")
+			lease := newPendingLease("verify-ttl-retry-lease", &metav1.Duration{Duration: time.Minute})
+			lease.Status.Phase = brokerv1alpha1.PhaseLeaseBound
+			lease.Status.InstanceRef = &corev1.LocalObjectReference{Name: inst.Name}
+			past := metav1.NewTime(time.Now().Add(-time.Hour))
+			lease.Status.BoundTime = &past
+			Expect(k8sClient.Status().Update(ctx, lease)).To(Succeed())
+
+			flakyClient := &failOnceDeleteClient{Client: k8sClient, failNextDelete: true}
+			r := &ClusterLeaseReconciler{Client: flakyClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lease)}
+
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).To(MatchError(ContainSubstring("injected delete failure")))
+
+			unchanged := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), unchanged)).To(Succeed())
+			Expect(unchanged.Status.Phase).To(Equal(brokerv1alpha1.PhaseLeaseBound))
+			Expect(unchanged.DeletionTimestamp.IsZero()).To(BeTrue())
+
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			deleting := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), deleting)).To(Succeed())
+			Expect(deleting.DeletionTimestamp).NotTo(BeNil())
+
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), &brokerv1alpha1.ClusterLease{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "lease should be fully deleted after retry")
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claimed instance should be deleted after retry")
+		})
+
+		It("recovers a lease left in Releasing", func() {
+			inst := newReadyInstance("verify-releasing-inst")
+			lease := newPendingLease("verify-releasing-lease", nil)
+			lease.Status.Phase = brokerv1alpha1.PhaseLeaseReleasing
+			lease.Status.InstanceRef = &corev1.LocalObjectReference{Name: inst.Name}
+			Expect(k8sClient.Status().Update(ctx, lease)).To(Succeed())
+
+			reconcileLease(lease)
+
+			deleting := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), deleting)).To(Succeed())
+			Expect(deleting.DeletionTimestamp).NotTo(BeNil())
+
+			reconcileLease(deleting)
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), &brokerv1alpha1.ClusterLease{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "legacy Releasing lease should be fully deleted")
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claimed instance should be deleted for legacy Releasing lease")
 		})
 	})
 }
