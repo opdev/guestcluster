@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -408,7 +409,14 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 // exact teardown, is the only way to guarantee no leftover cluster-scoped
 // operator/CSV state survives between lease holders, matching the
 // acceptance requirement.
-func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) error {
+func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
+	pending := false
+	deleteObject := func(obj client.Object, label string) error {
+		objectPending, err := r.deleteIfExists(ctx, obj, label)
+		pending = pending || objectPending
+		return err
+	}
+
 	namespace := resources.DefaultHostedClusterNamespace
 	name := resources.HostedClusterName(instance.Name)
 
@@ -418,8 +426,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// BuildHostedClusterAPIRoute Route down with it. So this teardown needs
 	// no separate explicit deletion of that Route.
 	hc := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	if err := r.deleteIfExists(ctx, hc, "HostedCluster"); err != nil {
-		return err
+	if err := deleteObject(hc, "HostedCluster"); err != nil {
+		return false, err
 	}
 
 	// NodePool is expected to cascade-delete with its HostedCluster via
@@ -430,8 +438,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// belt-and-suspenders step and tolerates NotFound.
 	npName := resources.NodePoolName(instance.Name)
 	np := &hyperv1beta1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: npName, Namespace: namespace}}
-	if err := r.deleteIfExists(ctx, np, "NodePool"); err != nil {
-		return err
+	if err := deleteObject(np, "NodePool"); err != nil {
+		return false, err
 	}
 
 	// resolvePullSecret materializes the default pull-secret copy in the
@@ -443,8 +451,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// that name never collides with resources.DefaultPullSecretName.
 	pullSecretName := resources.DefaultPullSecretName(instance.Name)
 	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pullSecretName, Namespace: namespace}}
-	if err := r.deleteIfExists(ctx, pullSecret, "default pull secret copy"); err != nil {
-		return err
+	if err := deleteObject(pullSecret, "default pull secret copy"); err != nil {
+		return false, err
 	}
 
 	// The same cross-namespace reasoning as the pull secret copy above
@@ -454,8 +462,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// this instance.
 	sshKeyName := resources.HCPWorkerSSHKeyName(instance.Name)
 	sshKeySecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sshKeyName, Namespace: namespace}}
-	if err := r.deleteIfExists(ctx, sshKeySecret, "HCP worker SSH key copy"); err != nil {
-		return err
+	if err := deleteObject(sshKeySecret, "HCP worker SSH key copy"); err != nil {
+		return false, err
 	}
 
 	// The same cross-namespace reasoning as the pull secret and SSH key
@@ -463,5 +471,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// owner reference across namespaces, so delete it explicitly.
 	servingCertName := resources.KASServingCertName(instance.Name)
 	servingCertSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: servingCertName, Namespace: namespace}}
-	return r.deleteIfExists(ctx, servingCertSecret, "KAS serving certificate")
+	if err := deleteObject(servingCertSecret, "KAS serving certificate"); err != nil {
+		return false, err
+	}
+	return pending, nil
 }

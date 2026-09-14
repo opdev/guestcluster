@@ -24,17 +24,21 @@ import (
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
 
 const (
@@ -186,6 +190,68 @@ func TestReconcileDeletionBypassesPlatformGate(t *testing.T) {
 	got := &brokerv1alpha1.ClusterInstance{}
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), got); err == nil {
 		t.Fatal("ClusterInstance still exists after deletion")
+	}
+}
+
+func TestReconcileDeletionWaitsForBackingResourceTeardown(t *testing.T) {
+	deletionTime := metav1.NewTime(time.Now())
+	instance := &brokerv1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleting-hcp-with-backing",
+			Namespace:         testNamespace,
+			Finalizers:        []string{instanceFinalizer},
+			DeletionTimestamp: &deletionTime,
+		},
+		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
+	}
+	backing := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
+		Name:       resources.HostedClusterName(instance.Name),
+		Namespace:  resources.DefaultHostedClusterNamespace,
+		Finalizers: []string{"test.example.com/backing-cleanup"},
+	}}
+	c := newPlatformFakeClient(t, instance, backing)
+	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}
+
+	result, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	if result.RequeueAfter != requeueInterval {
+		t.Fatalf("first RequeueAfter = %s, want %s", result.RequeueAfter, requeueInterval)
+	}
+
+	gotInstance := &brokerv1alpha1.ClusterInstance{}
+	if err := c.Get(context.Background(), req.NamespacedName, gotInstance); err != nil {
+		t.Fatalf("getting ClusterInstance while backing object is terminating: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(gotInstance, instanceFinalizer) {
+		t.Fatalf("ClusterInstance finalizer was removed while backing object still existed")
+	}
+
+	gotBacking := &hyperv1beta1.HostedCluster{}
+	backingKey := client.ObjectKeyFromObject(backing)
+	if err := c.Get(context.Background(), backingKey, gotBacking); err != nil {
+		t.Fatalf("getting terminating HostedCluster: %v", err)
+	}
+	if gotBacking.DeletionTimestamp == nil {
+		t.Fatal("HostedCluster delete was not requested")
+	}
+	gotBacking.Finalizers = nil
+	if err := c.Update(context.Background(), gotBacking); err != nil {
+		t.Fatalf("removing backing finalizer: %v", err)
+	}
+
+	result, err = r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("second Reconcile result = %+v, want empty result", result)
+	}
+
+	if err := c.Get(context.Background(), req.NamespacedName, gotInstance); !apierrors.IsNotFound(err) {
+		t.Fatalf("ClusterInstance get error = %v, want NotFound after backing teardown", err)
 	}
 }
 
