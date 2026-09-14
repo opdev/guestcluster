@@ -131,7 +131,11 @@ func (r *ClusterLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	switch lease.Status.Phase {
 	case brokerv1alpha1.PhaseLeaseBound:
 		return r.reconcileBound(ctx, lease)
-	case brokerv1alpha1.PhaseLeaseReleasing, brokerv1alpha1.PhaseLeaseReleased, brokerv1alpha1.PhaseLeaseFailed:
+	case brokerv1alpha1.PhaseLeaseReleasing:
+		// Releasing was persisted by older cleanup logic before it deleted the
+		// lease. Retry that delete so an interrupted cleanup can finish.
+		return r.reconcileReleasing(ctx, lease)
+	case brokerv1alpha1.PhaseLeaseReleased, brokerv1alpha1.PhaseLeaseFailed:
 		// Terminal-ish phases only move forward via deletion (handled above)
 		// or, for Failed, by CI/human intervention re-editing the spec. We
 		// still allow a Failed lease to be retried by falling through to
@@ -310,22 +314,25 @@ func (r *ClusterLeaseReconciler) reconcileBound(ctx context.Context, lease *brok
 	}
 
 	log.Info("ClusterLease TTL exceeded, forcing release", "lease", lease.Name, "elapsed", elapsed)
-	lease.Status.Phase = brokerv1alpha1.PhaseLeaseReleasing
-	if err := r.Status().Update(ctx, lease); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating lease status to Releasing after TTL expiry: %w", err)
-	}
-
-	// Delete the lease object itself to complete the release. This drives
-	// the exact same finalizer-based teardown path (reconcileDelete) that
-	// an explicit CI-initiated deletion would: it deletes the bound
-	// instance and removes the finalizer, so the lease object gets cleaned
-	// up. Without this delete, a TTL-expired lease would sit
-	// in Releasing forever (Reconcile treats Releasing as a terminal
-	// no-op) while holding its finalizer. Because releaseBoundInstance
-	// already deleted its instance, that stuck lease would dangle with
-	// Status.InstanceRef pointing at a no-longer-existent instance.
+	// Delete the lease object itself to complete the release. The finalizer
+	// records the in-progress release as DeletionTimestamp, and a failed
+	// delete leaves the lease Bound so the next reconcile can retry it.
+	// This drives the same finalizer-based teardown path as an explicit
+	// deletion: reconcileDelete deletes the bound instance and removes
+	// the finalizer.
 	if err := r.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("deleting lease after TTL expiry: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileReleasing recovers leases that were persisted in Releasing by an
+// older or interrupted cleanup attempt. DeletionTimestamp is the release state
+// used by the current cleanup path, so retry the delete and let the finalizer
+// handler perform the instance teardown.
+func (r *ClusterLeaseReconciler) reconcileReleasing(ctx context.Context, lease *brokerv1alpha1.ClusterLease) (ctrl.Result, error) {
+	if err := r.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("deleting lease in Releasing phase: %w", err)
 	}
 	return ctrl.Result{}, nil
 }
