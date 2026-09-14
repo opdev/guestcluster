@@ -27,9 +27,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// deleteIfExists deletes obj (which must have Name/Namespace set) if it
-// exists. It tolerates NotFound, both from the delete call itself and,
-// implicitly, from the case where obj was already gone.
+// deleteIfExists requests deletion of obj (which must have Name/Namespace set)
+// if it exists. The returned bool is true when the object still exists after
+// the delete request, usually because another finalizer is still running.
+// NotFound is treated as a completed deletion.
 //
 // The various teardown paths (CRC and HyperShift backing objects)
 // previously each open-coded a Get-then-conditionally-Delete block only to
@@ -39,19 +40,27 @@ import (
 // label is a short, human-readable description of obj, used in the log
 // message and wrapped errors (for example, "HostedCluster", "crc-agent
 // Job").
-func (r *ClusterInstanceReconciler) deleteIfExists(ctx context.Context, obj client.Object, label string, opts ...client.DeleteOption) error {
+func (r *ClusterInstanceReconciler) deleteIfExists(ctx context.Context, obj client.Object, label string, opts ...client.DeleteOption) (bool, error) {
 	log := logf.FromContext(ctx)
 	key := client.ObjectKeyFromObject(obj)
 
 	err := r.Delete(ctx, obj, opts...)
-	if err == nil {
-		log.Info("deleted "+label+" for teardown", "name", key.Name, "namespace", key.Namespace)
-		return nil
+	if err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("deleting %s %s/%s for teardown: %w", label, key.Namespace, key.Name, err)
 	}
 	if apierrors.IsNotFound(err) {
-		return nil
+		return false, nil
 	}
-	return fmt.Errorf("deleting %s %s/%s for teardown: %w", label, key.Namespace, key.Name, err)
+
+	if err := r.platformReader().Get(ctx, key, obj); err == nil {
+		log.Info("waiting for "+label+" teardown", "name", key.Name, "namespace", key.Namespace)
+		return true, nil
+	} else if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("checking %s %s/%s after delete: %w", label, key.Namespace, key.Name, err)
+	}
+
+	log.Info("deleted "+label+" for teardown", "name", key.Name, "namespace", key.Namespace)
+	return false, nil
 }
 
 // upsertSecret gets or creates desired. If changed(existing) reports drift,

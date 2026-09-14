@@ -309,8 +309,10 @@ func TestTeardownCRCBackingDeletesAllVMIHandoffs(t *testing.T) {
 	c := newCRCRecoveryFakeClient(t, instance, oldJob, currentJob, oldRaw, currentRaw)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	if err := r.teardownCRCBacking(ctx, instance); err != nil {
+	if pending, err := r.teardownCRCBacking(ctx, instance); err != nil {
 		t.Fatalf("teardownCRCBacking: %v", err)
+	} else if pending {
+		t.Fatal("teardownCRCBacking reported pending deletion for objects without finalizers")
 	}
 	for _, obj := range []client.Object{oldJob, currentJob, oldRaw, currentRaw} {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err == nil {

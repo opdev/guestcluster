@@ -458,13 +458,21 @@ func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
 func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, vmiUID, reason, message string) (ctrl.Result, error) {
 	if instance.Status.CRC != nil && instance.Status.CRC.VMIUID != "" {
 		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, instance.Status.CRC.VMIUID), Namespace: instance.Namespace}}
-		if err := r.deleteIfExists(ctx, job, "stale crc-agent Job"); err != nil {
+		pending, err := r.deleteIfExists(ctx, job, "stale crc-agent Job")
+		if err != nil {
 			return ctrl.Result{}, err
+		}
+		if pending {
+			return ctrl.Result{RequeueAfter: requeueInterval}, nil
 		}
 	}
 	published := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace}}
-	if err := r.deleteIfExists(ctx, published, "published CRC kubeconfig secret"); err != nil {
+	pending, err := r.deleteIfExists(ctx, published, "published CRC kubeconfig secret")
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if pending {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
 	if instance.Status.CRC == nil {
@@ -630,17 +638,24 @@ func (r *ClusterInstanceReconciler) mgmtIngressDomain(ctx context.Context) (stri
 // instance goes through this exact same teardown, and the replacement goes
 // through the normal creation path. See clusterinstance_controller.go's
 // Reconcile doc comment for the rationale.
-func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) error {
+func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
+	pending := false
+	deleteObject := func(obj client.Object, label string, opts ...client.DeleteOption) error {
+		objectPending, err := r.deleteIfExists(ctx, obj, label, opts...)
+		pending = pending || objectPending
+		return err
+	}
+
 	// Delete all crc-agent Jobs before the VM. VMI-scoped Job names mean more
 	// than one completed Job can exist after VMI replacement.
 	jobs := &batchv1.JobList{}
 	if err := r.List(ctx, jobs, client.InNamespace(instance.Namespace), client.MatchingLabels(resources.CommonLabels(instance))); err != nil {
-		return fmt.Errorf("listing crc-agent Jobs: %w", err)
+		return false, fmt.Errorf("listing crc-agent Jobs: %w", err)
 	}
 	background := metav1.DeletePropagationBackground
 	for i := range jobs.Items {
-		if err := r.deleteIfExists(ctx, &jobs.Items[i], "crc-agent Job", client.PropagationPolicy(background)); err != nil {
-			return err
+		if err := deleteObject(&jobs.Items[i], "crc-agent Job", client.PropagationPolicy(background)); err != nil {
+			return false, err
 		}
 	}
 
@@ -648,16 +663,16 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		Name:      resources.VMName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
-	if err := r.deleteIfExists(ctx, vm, "CRC VirtualMachine"); err != nil {
-		return err
+	if err := deleteObject(vm, "CRC VirtualMachine"); err != nil {
+		return false, err
 	}
 
 	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
 		Name:      resources.DataVolumeName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
-	if err := r.deleteIfExists(ctx, dv, "CRC DataVolume"); err != nil {
-		return err
+	if err := deleteObject(dv, "CRC DataVolume"); err != nil {
+		return false, err
 	}
 
 	rawSecrets := &corev1.SecretList{}
@@ -665,18 +680,18 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		resources.LabelManagedBy: "crc-agent",
 		resources.LabelInstance:  instance.Name,
 	}); err != nil {
-		return fmt.Errorf("listing CRC handoff secrets: %w", err)
+		return false, fmt.Errorf("listing CRC handoff secrets: %w", err)
 	}
 	for i := range rawSecrets.Items {
-		if err := r.deleteIfExists(ctx, &rawSecrets.Items[i], "raw kubeconfig secret"); err != nil {
-			return err
+		if err := deleteObject(&rawSecrets.Items[i], "raw kubeconfig secret"); err != nil {
+			return false, err
 		}
 	}
 	// Remove the legacy result name from older controller versions.
 	for _, name := range []string{resources.RawKubeconfigSecretName(instance.Name)} {
 		raw := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: instance.Namespace}}
-		if err := r.deleteIfExists(ctx, raw, "legacy raw kubeconfig secret"); err != nil {
-			return err
+		if err := deleteObject(raw, "legacy raw kubeconfig secret"); err != nil {
+			return false, err
 		}
 	}
 
@@ -684,13 +699,16 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		Name:      resources.CRCAPIRouteName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
-	if err := r.deleteIfExists(ctx, route, "CRC API Route"); err != nil {
-		return err
+	if err := deleteObject(route, "CRC API Route"); err != nil {
+		return false, err
 	}
 
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
 		Name:      resources.CRCAPIServiceName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
-	return r.deleteIfExists(ctx, svc, "CRC API Service")
+	if err := deleteObject(svc, "CRC API Service"); err != nil {
+		return false, err
+	}
+	return pending, nil
 }

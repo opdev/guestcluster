@@ -610,15 +610,21 @@ func (r *ClusterInstanceReconciler) reconcileDelete(ctx context.Context, instanc
 		}
 	}
 
-	var err error
+	var (
+		pending bool
+		err     error
+	)
 	switch instance.Spec.Type {
 	case brokerv1alpha1.TopologyCRC:
-		err = r.teardownCRCBacking(ctx, instance)
+		pending, err = r.teardownCRCBacking(ctx, instance)
 	case brokerv1alpha1.TopologyHCP:
-		err = r.teardownHyperShiftBacking(ctx, instance)
+		pending, err = r.teardownHyperShiftBacking(ctx, instance)
 	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("tearing down backing resources: %w", err)
+	}
+	if pending {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
 	controllerutil.RemoveFinalizer(instance, instanceFinalizer)
