@@ -592,6 +592,10 @@ make docker-build docker-push IMG=<registry>/guestcluster-operator:tag
 make deploy IMG=<registry>/guestcluster-operator:tag
 ```
 
+Leader election is enabled by default because lease binding uses process-local
+serialization. Use `--leader-elect=false` only when one manager process can
+run against the cluster.
+
 **Create pools** for the topologies you need. See `config/samples/` for
 ready-to-edit examples: `guestcluster_v1alpha1_clusterpool.yaml` for
 `crc`, and `guestcluster_v1alpha1_clusterpool_hcp.yaml` for `hcp`:

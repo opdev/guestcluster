@@ -98,12 +98,10 @@ const (
 	// --scale-down-unneeded-time: a Ready, unclaimed instance must stay idle
 	// for at least this long before it becomes eligible for trimming as
 	// excess. This is defense-in-depth against thrashing a spare that is
-	// about to be claimed. The single-write, assume-immediately binding
-	// model (see clusterlease_controller.go) already closes most such races
-	// structurally, but a short grace period costs nothing and protects
-	// against races not yet anticipated (for example, an unrelated
-	// conflict/backoff that delays a lease's own reconcile between finding
-	// a candidate and committing the bind).
+	// about to be claimed. The live-read and reservation model (see
+	// clusterlease_controller.go) closes the controller race, but a short
+	// grace period costs nothing and protects against unrelated delays between
+	// finding a candidate and committing the bind.
 	scaleDownStabilityPeriod = 2 * time.Minute
 )
 
@@ -138,6 +136,9 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, fmt.Errorf("ensuring CRCBundle for pool %s: %w", pool.Name, err)
 		}
 	}
+
+	clusterInstanceReservation.Lock()
+	defer clusterInstanceReservation.Unlock()
 
 	instanceList := &brokerv1alpha1.ClusterInstanceList{}
 	if err := r.APIReader.List(ctx, instanceList,
@@ -247,10 +248,11 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // which ClusterInstances are claimed and how much unclaimed demand
 // (pendingDemand) targets pool poolName.
 //
-// claimed records, by ClusterInstance name, every instance named by some
-// non-deleted ClusterLease's Status.InstanceRef, the single source of truth
-// for the lease-instance binding (see clusterlease_types.go). This is the
-// ONLY place that determines "is this instance in use";
+// claimed records, by ClusterInstance name, every instance named by a
+// ClusterLease's Status.InstanceRef, including a deleting lease until its
+// instance is unavailable. Status.InstanceRef is the single source of truth
+// for the lease-instance binding (see clusterlease_types.go). This is the ONLY
+// place that determines "is this instance in use";
 // ClusterInstance.Status.LeaseRef is a read-only derived projection and
 // Reconcile never consults it for accounting decisions.
 // ClusterLeaseReconciler commits a claim with a single atomic write to the
@@ -273,11 +275,11 @@ func computeLeaseAccounting(leaseList *brokerv1alpha1.ClusterLeaseList, poolName
 	claimed = make(map[string]bool)
 	for i := range leaseList.Items {
 		l := &leaseList.Items[i]
-		if !l.DeletionTimestamp.IsZero() {
-			continue
-		}
 		if l.Status.InstanceRef != nil {
 			claimed[l.Status.InstanceRef.Name] = true
+		}
+		if !l.DeletionTimestamp.IsZero() {
+			continue
 		}
 		if l.Spec.PoolRef.Name != poolName {
 			continue
