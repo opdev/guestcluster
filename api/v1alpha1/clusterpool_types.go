@@ -128,13 +128,14 @@ type ClusterTemplate struct {
 	// +optional
 	RootVolumeSize string `json:"rootVolumeSize,omitempty"`
 
-	// PullSecretRef references a Secret (in the operator's namespace) containing the
-	// pull-secret used to pull the release payload / CRC bundle images. This field is
-	// optional. When unset, the operator defaults to the management cluster's own
+	// PullSecretRef references a Secret in the ClusterInstance's namespace containing
+	// the pull-secret used to pull the release payload / CRC bundle images. This field
+	// is optional. When unset, the operator defaults to the management cluster's own
 	// global pull secret (the "pull-secret" Secret in the "openshift-config"
-	// namespace), which is present on every OpenShift cluster. Set this field
-	// explicitly to use a different/narrower credential (e.g. one scoped to a
-	// disconnected mirror).
+	// namespace), which is present on every OpenShift cluster. For topology=hcp, an
+	// explicit Secret is copied to the HostedCluster's namespace under a per-instance
+	// name before the HostedCluster uses it. Set this field explicitly to use a
+	// different/narrower credential (e.g. one scoped to a disconnected mirror).
 	// +optional
 	PullSecretRef corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
 

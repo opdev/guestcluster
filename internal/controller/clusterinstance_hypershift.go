@@ -442,16 +442,14 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 		return false, err
 	}
 
-	// resolvePullSecret materializes the default pull-secret copy in the
-	// HostedCluster's namespace only when Template.PullSecretRef is unset.
-	// That copy cannot carry an owner reference across namespaces, so it is
-	// not garbage-collected automatically like the same-namespace crc copy
-	// is. Delete it explicitly here. This delete is a harmless no-op
-	// (NotFound) when an explicit PullSecretRef was used instead, because
-	// that name never collides with resources.DefaultPullSecretName.
+	// resolvePullSecret materializes the per-instance pull-secret copy in the
+	// HostedCluster's namespace whenever the source and target namespaces
+	// differ. That copy cannot carry an owner reference across namespaces, so
+	// it is not garbage-collected automatically like the same-namespace crc
+	// copy is. Delete it explicitly here.
 	pullSecretName := resources.DefaultPullSecretName(instance.Name)
 	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pullSecretName, Namespace: namespace}}
-	if err := deleteObject(pullSecret, "default pull secret copy"); err != nil {
+	if err := deleteObject(pullSecret, "pull secret copy"); err != nil {
 		return false, err
 	}
 
