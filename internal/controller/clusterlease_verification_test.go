@@ -37,6 +37,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -63,6 +65,46 @@ func (c *failOnceDeleteClient) Delete(ctx context.Context, obj client.Object, op
 		return fmt.Errorf("injected delete failure")
 	}
 	return c.Client.Delete(ctx, obj, opts...)
+}
+
+type delayedCacheClient struct {
+	client.Client
+	leases    *brokerv1alpha1.ClusterLeaseList
+	instances *brokerv1alpha1.ClusterInstanceList
+}
+
+type blockingInstanceListReader struct {
+	client.Reader
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	calls        atomic.Int32
+}
+
+func (r *blockingInstanceListReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*brokerv1alpha1.ClusterInstanceList); ok {
+		if r.calls.Add(1) == 1 {
+			close(r.firstEntered)
+			select {
+			case <-r.releaseFirst:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return r.Reader.List(ctx, list, opts...)
+}
+
+func (c *delayedCacheClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	switch typedList := list.(type) {
+	case *brokerv1alpha1.ClusterLeaseList:
+		*typedList = *c.leases.DeepCopy()
+		return nil
+	case *brokerv1alpha1.ClusterInstanceList:
+		*typedList = *c.instances.DeepCopy()
+		return nil
+	default:
+		return c.Client.List(ctx, list, opts...)
+	}
 }
 
 var _ = func() bool {
@@ -135,11 +177,13 @@ func registerClusterLeaseVerificationSpecs(topology brokerv1alpha1.ClusterTopolo
 			return lease
 		}
 
-		reconcileLease := func(lease *brokerv1alpha1.ClusterLease) reconcile.Result {
-			r := &ClusterLeaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileLeaseWith := func(r *ClusterLeaseReconciler, lease *brokerv1alpha1.ClusterLease) reconcile.Result {
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lease)})
 			Expect(err).NotTo(HaveOccurred())
 			return res
+		}
+		reconcileLease := func(lease *brokerv1alpha1.ClusterLease) reconcile.Result {
+			return reconcileLeaseWith(&ClusterLeaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}, lease)
 		}
 
 		AfterEach(func() {
@@ -201,6 +245,75 @@ func registerClusterLeaseVerificationSpecs(topology brokerv1alpha1.ClusterTopolo
 			finalInst := &brokerv1alpha1.ClusterInstance{}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), finalInst)).To(Succeed())
 			_ = finalInst // instance-side state is a derived projection, not asserted here
+		})
+
+		It("serializes concurrent binding when the lease cache is delayed", func() {
+			newReadyInstance("verify-delayed-cache-inst")
+			first := newPendingLease("verify-delayed-cache-first", nil)
+			second := newPendingLease("verify-delayed-cache-second", nil)
+
+			staleLeases := &brokerv1alpha1.ClusterLeaseList{}
+			Expect(k8sClient.List(ctx, staleLeases, client.InNamespace(namespace))).To(Succeed())
+			staleInstances := &brokerv1alpha1.ClusterInstanceList{}
+			Expect(k8sClient.List(ctx, staleInstances, client.InNamespace(namespace))).To(Succeed())
+			staleClient := &delayedCacheClient{
+				Client:    k8sClient,
+				leases:    staleLeases,
+				instances: staleInstances,
+			}
+			liveReader := &blockingInstanceListReader{
+				Reader:       k8sClient,
+				firstEntered: make(chan struct{}),
+				releaseFirst: make(chan struct{}),
+			}
+			releaseFirst := sync.OnceFunc(func() { close(liveReader.releaseFirst) })
+			DeferCleanup(releaseFirst)
+			r := &ClusterLeaseReconciler{
+				Client:    staleClient,
+				Scheme:    k8sClient.Scheme(),
+				APIReader: liveReader,
+			}
+
+			errs := make(chan error, 2)
+			reconcileAsync := func(lease *brokerv1alpha1.ClusterLease) {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lease)})
+				errs <- err
+			}
+
+			go reconcileAsync(first)
+			Eventually(liveReader.firstEntered).Should(BeClosed())
+			go reconcileAsync(second)
+			Consistently(liveReader.calls.Load, 100*time.Millisecond, 10*time.Millisecond).Should(Equal(int32(1)),
+				"a second matcher must not enter the reservation section concurrently")
+			releaseFirst()
+			Eventually(errs).Should(Receive(BeNil()))
+			Eventually(errs).Should(Receive(BeNil()))
+
+			boundFirst := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(first), boundFirst)).To(Succeed())
+			Expect(boundFirst.Status.Phase).To(Equal(brokerv1alpha1.PhaseLeaseBound))
+			stillPending := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(second), stillPending)).To(Succeed())
+			Expect(stillPending.Status.Phase).To(Equal(brokerv1alpha1.PhaseLeasePending))
+			Expect(stillPending.Status.InstanceRef).To(BeNil())
+		})
+
+		It("keeps a deleting lease's instance claimed until cleanup starts", func() {
+			inst := newReadyInstance("verify-deleting-claim-inst")
+			claimant := newPendingLease("verify-deleting-claim-first", nil)
+			claimant.Status.Phase = brokerv1alpha1.PhaseLeaseBound
+			claimant.Status.InstanceRef = &corev1.LocalObjectReference{Name: inst.Name}
+			Expect(k8sClient.Status().Update(ctx, claimant)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, claimant)).To(Succeed())
+
+			second := newPendingLease("verify-deleting-claim-second", nil)
+			reconcileLease(second)
+
+			stillPending := &brokerv1alpha1.ClusterLease{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(second), stillPending)).To(Succeed())
+			Expect(stillPending.Status.Phase).To(Equal(brokerv1alpha1.PhaseLeasePending))
+			Expect(stillPending.Status.InstanceRef).To(BeNil())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})).To(Succeed())
 		})
 
 		It("releases on TTL expiry: deletes both the lease and its claimed instance", func() {

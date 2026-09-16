@@ -246,6 +246,30 @@ func registerClusterPoolVerificationSpecs(topology brokerv1alpha1.ClusterTopolog
 				"a claimed instance must never be scaled down even though minSize=warmSpares=0")
 		})
 
+		It("does not scale down an instance claimed by a deleting ClusterLease", func() {
+			pool := newVerifyPool("pool-neverdelete-deleting", 4, 0, 0)
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			inst := newVerifyInstance("inst-deleting-claimed", pool.Name, brokerv1alpha1.PhaseReady)
+			lease := newVerifyLease("lease-deleting-claims-it", pool.Name, inst.Name)
+			lease.Finalizers = []string{leaseFinalizer}
+			Expect(k8sClient.Update(ctx, lease)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, lease)).To(Succeed())
+
+			fresh := &brokerv1alpha1.ClusterInstance{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), fresh)).To(Succeed())
+			for i := range fresh.Status.Conditions {
+				if fresh.Status.Conditions[i].Type == conditionTypeReady {
+					fresh.Status.Conditions[i].LastTransitionTime = metav1.NewTime(time.Now().Add(-2 * scaleDownStabilityPeriod))
+				}
+			}
+			Expect(k8sClient.Status().Update(ctx, fresh)).To(Succeed())
+
+			reconcilePool(pool)
+
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})).To(Succeed(),
+				"a deleting lease must continue to protect its instance until lease cleanup deletes it")
+		})
+
 		It("respects the scale-down stability window: does not delete a freshly-Ready excess instance, but does once it has been idle long enough", func() {
 			pool := newVerifyPool("pool-stability", 4, 0, 0)
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())

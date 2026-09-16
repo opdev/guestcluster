@@ -74,16 +74,10 @@ const (
 // from a named ClusterPool, it finds a Ready ClusterInstance belonging to
 // that pool that no other lease currently claims, and binds it to this
 // lease with a SINGLE atomic write to the lease's own status (InstanceRef
-// plus Phase=Bound). This is modeled directly on how the Kubernetes
-// scheduler binds a Pod to a Node by writing Pod.Spec.NodeName: one
-// authoritative pointer, on the demand object, written once. Unlike the
-// scheduler analogy, this reconciler is the ONLY writer of that pointer, so
-// there is no two-controllers-racing-to-bind concern. Critically, it never
-// writes anything to the ClusterInstance side. This design eliminates the
-// two-write partial-bind races, for example an instance claimed while its
-// lease's own status lags behind, or a lease retried after a partial
-// failure re-claiming a second instance, that motivated defensive patches
-// in earlier iterations of this controller and ClusterPoolReconciler.
+// plus Phase=Bound). Matching uses a live API read and is serialized with
+// pool scale-down, so a stale informer cache cannot cause two leases to select
+// or remove the same instance. The lease status remains the authoritative
+// binding record, and this reconciler does not write ClusterInstance status.
 //
 // ClusterLeaseReconciler never creates new ClusterInstances itself; that
 // supply-side responsibility belongs entirely to ClusterPoolReconciler. On
@@ -93,7 +87,8 @@ const (
 // fresh replacement, the same as it does for any other capacity shortfall.
 type ClusterLeaseReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterleases,verbs=get;list;watch;create;update;patch;delete
@@ -106,7 +101,7 @@ func (r *ClusterLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	log := logf.FromContext(ctx)
 
 	lease := &brokerv1alpha1.ClusterLease{}
-	if err := r.Get(ctx, req.NamespacedName, lease); err != nil {
+	if err := r.apiReader().Get(ctx, req.NamespacedName, lease); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.V(1).Info("ClusterLease deleted, nothing to reconcile")
 			return ctrl.Result{}, nil
@@ -154,8 +149,32 @@ func (r *ClusterLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *ClusterLeaseReconciler) reconcilePending(ctx context.Context, lease *brokerv1alpha1.ClusterLease) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	clusterInstanceReservation.Lock()
+	defer clusterInstanceReservation.Unlock()
+
+	// Re-read the lease after acquiring the reservation. A second reconcile
+	// for the same lease can have started before the first one committed its
+	// status, and must not bind that lease to a second instance from a stale
+	// Pending object.
+	currentLease := &brokerv1alpha1.ClusterLease{}
+	if err := r.apiReader().Get(ctx, client.ObjectKeyFromObject(lease), currentLease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("refreshing ClusterLease before matching: %w", err)
+	}
+	if !currentLease.DeletionTimestamp.IsZero() || currentLease.Status.InstanceRef != nil {
+		return ctrl.Result{}, nil
+	}
+	switch currentLease.Status.Phase {
+	case "", brokerv1alpha1.PhaseLeasePending:
+		lease = currentLease
+	default:
+		return ctrl.Result{}, nil
+	}
+
 	instanceList := &brokerv1alpha1.ClusterInstanceList{}
-	if err := r.List(ctx, instanceList,
+	if err := r.apiReader().List(ctx, instanceList,
 		client.InNamespace(lease.Namespace),
 		client.MatchingLabels(resources.PoolLabels(lease.Spec.PoolRef.Name)),
 	); err != nil {
@@ -171,15 +190,12 @@ func (r *ClusterLeaseReconciler) reconcilePending(ctx context.Context, lease *br
 	// scale and avoids needing a field index for this one in-namespace,
 	// same-pool lookup.
 	siblingLeases := &brokerv1alpha1.ClusterLeaseList{}
-	if err := r.List(ctx, siblingLeases, client.InNamespace(lease.Namespace)); err != nil {
+	if err := r.apiReader().List(ctx, siblingLeases, client.InNamespace(lease.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing sibling ClusterLeases: %w", err)
 	}
 	claimed := make(map[string]bool)
 	for i := range siblingLeases.Items {
 		l := &siblingLeases.Items[i]
-		if !l.DeletionTimestamp.IsZero() {
-			continue
-		}
 		if l.Spec.PoolRef.Name != lease.Spec.PoolRef.Name {
 			continue
 		}
@@ -224,31 +240,20 @@ func (r *ClusterLeaseReconciler) reconcilePending(ctx context.Context, lease *br
 	return r.bind(ctx, lease, candidate)
 }
 
-// bind copies the instance's kubeconfig Secret into a lease-owned Secret,
-// and mirrors the instance's observed version, topology, and endpoint onto
-// the lease status as the explicit CI outputs the acceptance criteria
-// require. It then commits the binding itself via a SINGLE Status().Update
-// on the lease (InstanceRef plus Phase=Bound), the one and only
-// authoritative write of the lease-instance relationship anywhere in the
-// operator. bind writes nothing to the ClusterInstance side. A
-// resourceVersion conflict on this Status().Update, from another
-// ClusterLease reconcile racing for the same instance, surfaces as an
-// error, which controller-runtime retries against a freshly-Get'd lease on
-// the next attempt. Because re-running reconcilePending re-derives the
-// claimed set from scratch, two concurrent leases can never both claim the
-// same instance, and a failed or retried attempt here can never leave a
-// stray, unclaimed-by-any-lease write behind: if this call fails, it
-// writes NOTHING.
+// bind copies the instance's kubeconfig Secret into a lease-owned Secret and
+// commits the binding via one Status().Update on the lease. The caller holds
+// clusterInstanceReservation from matching through this update, so another
+// lease or pool scale-down cannot act on the same instance concurrently.
 func (r *ClusterLeaseReconciler) bind(ctx context.Context, lease *brokerv1alpha1.ClusterLease, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
 	srcSecret := &corev1.Secret{}
 	srcKey := client.ObjectKey{Namespace: instance.Namespace, Name: instance.Status.KubeconfigSecretRef.Name}
-	if err := r.Get(ctx, srcKey, srcSecret); err != nil {
+	if err := r.apiReader().Get(ctx, srcKey, srcSecret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetching instance kubeconfig secret %s: %w", srcKey, err)
 	}
 
 	leaseSecretName := resources.LeaseKubeconfigSecretName(lease.Name)
 	leaseSecret := &corev1.Secret{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: lease.Namespace, Name: leaseSecretName}, leaseSecret)
+	err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: lease.Namespace, Name: leaseSecretName}, leaseSecret)
 	switch {
 	case apierrors.IsNotFound(err):
 		leaseSecret = &corev1.Secret{
@@ -346,6 +351,9 @@ func (r *ClusterLeaseReconciler) reconcileDelete(ctx context.Context, lease *bro
 		return ctrl.Result{}, nil
 	}
 
+	clusterInstanceReservation.Lock()
+	defer clusterInstanceReservation.Unlock()
+
 	if err := r.releaseBoundInstance(ctx, lease); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -394,6 +402,13 @@ func (r *ClusterLeaseReconciler) setPendingCondition(ctx context.Context, lease 
 		return fmt.Errorf("updating lease status: %w", err)
 	}
 	return nil
+}
+
+func (r *ClusterLeaseReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // leasesForInstance maps a ClusterInstance event to reconcile.Requests for
