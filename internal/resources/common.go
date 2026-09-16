@@ -240,11 +240,10 @@ const (
 )
 
 // DefaultPullSecretName is the deterministic name of the per-instance Secret
-// the operator creates as a copy of ClusterPullSecretName, when
-// ClusterTemplate.PullSecretRef is left unset. The operator places it in
-// whatever namespace the topology needs: the instance's own namespace for
-// crc, the HostedCluster's namespace for hcp-*. See resolvePullSecret in the
-// ClusterInstance controller.
+// the operator creates when it must materialize a pull secret in a different
+// namespace. The operator places it in whatever namespace the topology needs:
+// the instance's own namespace for crc, or the HostedCluster's namespace for
+// hcp. See resolvePullSecret in the ClusterInstance controller.
 func DefaultPullSecretName(instanceName string) string {
 	return instanceName + "-pull-secret"
 }

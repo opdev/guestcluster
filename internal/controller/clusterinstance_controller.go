@@ -492,7 +492,9 @@ func (r *ClusterInstanceReconciler) ensureNamespace(ctx context.Context, name st
 //
 // If Template.PullSecretRef is set, resolvePullSecret uses that Secret
 // (which must exist in instance.Namespace and carry the dockerconfigjson
-// data key) as-is. This is the explicit-override path, for example for
+// data key) directly when targetNamespace is the instance namespace. When
+// targetNamespace differs, it copies the Secret there under the deterministic
+// per-instance name. This is the explicit-override path, for example for
 // disconnected or mirrored registries that need a narrower or different
 // credential than the management cluster's own.
 //
@@ -513,6 +515,7 @@ func (r *ClusterInstanceReconciler) ensureNamespace(ctx context.Context, name st
 // provisioning error.
 func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, targetNamespace string) (string, error) {
 	ref := instance.Spec.Template.PullSecretRef
+	var data []byte
 	if ref.Name != "" {
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: instance.Namespace}, secret); err != nil {
@@ -524,19 +527,22 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 		if len(secret.Data[resources.PullSecretDataKey]) == 0 {
 			return "", fmt.Errorf("pull secret %s/%s is missing data key %q", instance.Namespace, ref.Name, resources.PullSecretDataKey)
 		}
-		return ref.Name, nil
-	}
-
-	clusterSecret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: resources.ClusterPullSecretName, Namespace: resources.ClusterPullSecretNamespace}, clusterSecret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("template.pullSecretRef is unset and the cluster's default pull secret %s/%s was not found", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName)
+		if targetNamespace == instance.Namespace {
+			return ref.Name, nil
 		}
-		return "", fmt.Errorf("getting cluster default pull secret %s/%s: %w", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, err)
-	}
-	data := clusterSecret.Data[resources.PullSecretDataKey]
-	if len(data) == 0 {
-		return "", fmt.Errorf("cluster default pull secret %s/%s is missing data key %q", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, resources.PullSecretDataKey)
+		data = secret.Data[resources.PullSecretDataKey]
+	} else {
+		clusterSecret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Name: resources.ClusterPullSecretName, Namespace: resources.ClusterPullSecretNamespace}, clusterSecret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "", fmt.Errorf("template.pullSecretRef is unset and the cluster's default pull secret %s/%s was not found", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName)
+			}
+			return "", fmt.Errorf("getting cluster default pull secret %s/%s: %w", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, err)
+		}
+		data = clusterSecret.Data[resources.PullSecretDataKey]
+		if len(data) == 0 {
+			return "", fmt.Errorf("cluster default pull secret %s/%s is missing data key %q", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, resources.PullSecretDataKey)
+		}
 	}
 
 	copyName := resources.DefaultPullSecretName(instance.Name)

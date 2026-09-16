@@ -345,7 +345,10 @@ different credential:
 ```sh
 kubectl create secret generic crc-pull-secret --from-file=.dockerconfigjson=./pull-secret.json --type=kubernetes.io/dockerconfigjson
 ```
-then reference it via `template.pullSecretRef.name: crc-pull-secret`.
+then reference it via `template.pullSecretRef.name: crc-pull-secret`. The
+Secret must be in the same namespace as the `ClusterPool` or `ClusterInstance`.
+For `hcp`, the operator copies it to the HostedCluster namespace under a
+per-instance name before HyperShift uses it.
 
 #### Common to both paths
 
@@ -559,8 +562,9 @@ On the **management** OpenShift cluster:
   to have `get` access to that Secret. The RBAC in
   `config/openshift-config-rbac` grants this access; `make deploy`
   applies it automatically. To override the default, set
-  `template.pullSecretRef` explicitly, pointing at an opaque `Secret` in
-  the same namespace as the pool or instances.
+  `template.pullSecretRef` explicitly, pointing at a `Secret` in the same
+  namespace as the pool or instances. For `hcp`, the operator copies that
+  Secret into the HostedCluster namespace before provisioning.
 - For `crc` pools specifically: an extracted CRC bundle `crc.qcow2`,
   hosted at an HTTP-reachable URL, and a `Secret` holding its
   `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`). See
