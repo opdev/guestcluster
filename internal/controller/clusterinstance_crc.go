@@ -373,8 +373,8 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 	if err := checkCRCAPIReady(ctx, published.Data[resources.KubeconfigSecretKey]); err != nil {
 		return r.markCRCAPIUnavailable(ctx, instance, "GuestAPIUnavailable", fmt.Sprintf("guest API readiness check failed: %v", err))
 	}
-	if result, err := r.recordCRCAPIHealth(ctx, instance, metav1.ConditionTrue, "GuestAPIReady", "guest API readiness check succeeded"); err != nil || result.RequeueAfter > 0 {
-		return result, err
+	if err := r.recordCRCAPIHealth(ctx, instance, metav1.ConditionTrue, "GuestAPIReady", "guest API readiness check succeeded"); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	result, err := r.reconcileLeaseRefProjection(ctx, instance)
@@ -497,10 +497,10 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
-func (r *ClusterInstanceReconciler) recordCRCAPIHealth(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
+func (r *ClusterInstanceReconciler) recordCRCAPIHealth(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, status metav1.ConditionStatus, reason, message string) error {
 	condition := apimeta.FindStatusCondition(instance.Status.Conditions, conditionTypeGuestAPIReachable)
 	if condition != nil && condition.Status == status && condition.Reason == reason && condition.Message == message {
-		return ctrl.Result{RequeueAfter: crcReadyRequeueInterval}, nil
+		return nil
 	}
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeGuestAPIReachable,
@@ -510,9 +510,9 @@ func (r *ClusterInstanceReconciler) recordCRCAPIHealth(ctx context.Context, inst
 		ObservedGeneration: instance.Generation,
 	})
 	if err := r.Status().Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating CRC guest API health: %w", err)
+		return fmt.Errorf("updating CRC guest API health: %w", err)
 	}
-	return ctrl.Result{RequeueAfter: crcReadyRequeueInterval}, nil
+	return nil
 }
 
 // markCRCAPIUnavailable prevents leases from using an unreachable guest API

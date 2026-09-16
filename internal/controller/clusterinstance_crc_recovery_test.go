@@ -132,6 +132,12 @@ func TestReconcileReadyCRCRequeuesHealthCheck(t *testing.T) {
 			CRC:   &brokerv1alpha1.CRCBackingStatus{VMIUID: recoveryVMIUID},
 		},
 	}
+	lease := &brokerv1alpha1.ClusterLease{
+		ObjectMeta: metav1.ObjectMeta{Name: "crc-lease", Namespace: testNamespace},
+		Status: brokerv1alpha1.ClusterLeaseStatus{
+			InstanceRef: &corev1.LocalObjectReference{Name: instance.Name},
+		},
+	}
 	vmi := &kubevirtv1.VirtualMachineInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID(recoveryVMIUID)},
 		Status:     kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running},
@@ -152,7 +158,7 @@ contexts:
 current-context: guest
 `, server.URL))},
 	}
-	c := newCRCRecoveryFakeClient(t, instance, vmi, published)
+	c := newCRCRecoveryFakeClient(t, instance, lease, vmi, published)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
 	result, err := r.reconcileReadyCRC(context.Background(), instance)
@@ -161,6 +167,13 @@ current-context: guest
 	}
 	if result.RequeueAfter != crcReadyRequeueInterval {
 		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, crcReadyRequeueInterval)
+	}
+	got := &brokerv1alpha1.ClusterInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), got); err != nil {
+		t.Fatalf("getting instance: %v", err)
+	}
+	if got.Status.LeaseRef == nil || got.Status.LeaseRef.Name != lease.Name {
+		t.Fatalf("expected LeaseRef to be %q, got %+v", lease.Name, got.Status.LeaseRef)
 	}
 }
 
