@@ -62,10 +62,6 @@ const (
 	// provisions instances itself.
 	leasePendingRequeue = 10 * time.Second
 
-	// leaseTTLCheckInterval bounds how often a Bound lease with a TTL is
-	// re-checked for expiry.
-	leaseTTLCheckInterval = 30 * time.Second
-
 	conditionTypeLeaseBound = "Bound"
 )
 
@@ -90,6 +86,9 @@ type ClusterLeaseReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	APIReader client.Reader
+	// Now is the time source used for binding and TTL calculations. A nil
+	// value uses the wall clock.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterleases,verbs=get;list;watch;create;update;patch;delete
@@ -280,7 +279,7 @@ func (r *ClusterLeaseReconciler) bind(ctx context.Context, lease *brokerv1alpha1
 		}
 	}
 
-	now := metav1.Now()
+	now := metav1.NewTime(r.now())
 	lease.Status.Phase = brokerv1alpha1.PhaseLeaseBound
 	lease.Status.InstanceRef = &corev1.LocalObjectReference{Name: instance.Name}
 	lease.Status.KubeconfigSecretRef = &corev1.LocalObjectReference{Name: leaseSecretName}
@@ -310,16 +309,18 @@ func (r *ClusterLeaseReconciler) bind(ctx context.Context, lease *brokerv1alpha1
 func (r *ClusterLeaseReconciler) reconcileBound(ctx context.Context, lease *brokerv1alpha1.ClusterLease) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if lease.Spec.TTL == nil || lease.Status.BoundTime == nil {
+	if lease.Spec.TTL == nil || lease.Spec.TTL.Duration == 0 || lease.Status.BoundTime == nil {
 		return ctrl.Result{}, nil
 	}
 
-	elapsed := time.Since(lease.Status.BoundTime.Time)
-	if elapsed < lease.Spec.TTL.Duration {
-		return ctrl.Result{RequeueAfter: leaseTTLCheckInterval}, nil
+	now := r.now()
+	deadline := lease.Status.BoundTime.Add(lease.Spec.TTL.Duration)
+	remaining := deadline.Sub(now)
+	if remaining > 0 {
+		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	log.Info("ClusterLease TTL exceeded, forcing release", "lease", lease.Name, "elapsed", elapsed)
+	log.Info("ClusterLease TTL exceeded, forcing release", "lease", lease.Name, "elapsed", now.Sub(lease.Status.BoundTime.Time))
 	// Delete the lease object itself to complete the release. The finalizer
 	// records the in-progress release as DeletionTimestamp, and a failed
 	// delete leaves the lease Bound so the next reconcile can retry it.
@@ -407,6 +408,13 @@ func (r *ClusterLeaseReconciler) setPendingCondition(ctx context.Context, lease 
 		return fmt.Errorf("updating lease status: %w", err)
 	}
 	return nil
+}
+
+func (r *ClusterLeaseReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *ClusterLeaseReconciler) apiReader() client.Reader {
