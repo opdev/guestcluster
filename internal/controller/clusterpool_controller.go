@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -130,6 +131,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		return ctrl.Result{}, fmt.Errorf("getting ClusterPool: %w", err)
 	}
+	previousStatus := pool.Status.DeepCopy()
 
 	if pool.Spec.Type == brokerv1alpha1.TopologyCRC && pool.Spec.Template.CRCVersion != "" {
 		if err := r.ensureCRCBundle(ctx, pool); err != nil {
@@ -220,8 +222,8 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// deficit. SetupWithManager's Owns(ClusterInstance) watch already
 		// guarantees a fresh reconcile once the cache actually reflects the
 		// new instance, so no explicit Requeue is needed here.
-		if err := r.Status().Update(ctx, pool); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating ClusterPool status: %w", err)
+		if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -233,12 +235,12 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// rather than cancelled mid-boot; it becomes a candidate for this same
 	// trim once Ready, on a later reconcile, if still in excess by then.
 	// See scaleDownExcess's doc for the excess and eligibility rules.
-	if result, handled, err := r.scaleDownExcess(ctx, pool, availableInstances, available, total, pendingDemand); handled {
+	if result, handled, err := r.scaleDownExcess(ctx, pool, previousStatus, availableInstances, available, total, pendingDemand); handled {
 		return result, err
 	}
 
-	if err := r.Status().Update(ctx, pool); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating ClusterPool status: %w", err)
+	if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -418,7 +420,7 @@ func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDema
 // returning to unclaimed-Ready (see clusterinstance_controller.go), so that
 // timestamp accurately reflects how long this instance has been idle, and
 // not merely when it last became Ready.
-func (r *ClusterPoolReconciler) scaleDownExcess(ctx context.Context, pool *brokerv1alpha1.ClusterPool, availableInstances []*brokerv1alpha1.ClusterInstance, available, total, pendingDemand int32) (ctrl.Result, bool, error) {
+func (r *ClusterPoolReconciler) scaleDownExcess(ctx context.Context, pool *brokerv1alpha1.ClusterPool, previousStatus *brokerv1alpha1.ClusterPoolStatus, availableInstances []*brokerv1alpha1.ClusterInstance, available, total, pendingDemand int32) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 
 	spareFloor := pool.Spec.WarmSpares
@@ -455,8 +457,8 @@ func (r *ClusterPoolReconciler) scaleDownExcess(ctx context.Context, pool *broke
 		// soonest candidate will have, instead of busy-looping.
 		log.V(1).Info("excess capacity detected but no candidate has cleared the scale-down stability window yet",
 			"pool", pool.Name, "available", available, "total", total, "requeueAfter", minRemaining)
-		if err := r.Status().Update(ctx, pool); err != nil {
-			return ctrl.Result{}, true, fmt.Errorf("updating ClusterPool status: %w", err)
+		if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
+			return ctrl.Result{}, true, err
 		}
 		return ctrl.Result{RequeueAfter: minRemaining}, true, nil
 	}
@@ -475,10 +477,20 @@ func (r *ClusterPoolReconciler) scaleDownExcess(ctx context.Context, pool *broke
 	// a second instance for what was only a deficit of one.
 	// Owns(ClusterInstance) guarantees a fresh, cache-consistent reconcile
 	// once the deletion is observed.
-	if err := r.Status().Update(ctx, pool); err != nil {
-		return ctrl.Result{}, true, fmt.Errorf("updating ClusterPool status: %w", err)
+	if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
+		return ctrl.Result{}, true, err
 	}
 	return ctrl.Result{}, true, nil
+}
+
+func (r *ClusterPoolReconciler) updateStatusIfChanged(ctx context.Context, pool *brokerv1alpha1.ClusterPool, previousStatus *brokerv1alpha1.ClusterPoolStatus) error {
+	if equality.Semantic.DeepEqual(*previousStatus, pool.Status) {
+		return nil
+	}
+	if err := r.Status().Update(ctx, pool); err != nil {
+		return fmt.Errorf("updating ClusterPool status: %w", err)
+	}
+	return nil
 }
 
 // instanceIdleSince returns when inst became eligible for the scale-down

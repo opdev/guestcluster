@@ -224,11 +224,15 @@ func firstBlockedReason(conditions []platformCondition) string {
 }
 
 func (r *ClusterInstanceReconciler) updatePlatformStatus(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus) error {
+	return r.updateStatusIfChanged(ctx, instance, previousStatus, "updating platform readiness status")
+}
+
+func (r *ClusterInstanceReconciler) updateStatusIfChanged(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus, operation string) error {
 	if equality.Semantic.DeepEqual(*previousStatus, instance.Status) {
 		return nil
 	}
 	if err := r.Status().Update(ctx, instance); err != nil {
-		return fmt.Errorf("updating platform readiness status: %w", err)
+		return fmt.Errorf("%s: %w", operation, err)
 	}
 	return nil
 }
@@ -274,6 +278,7 @@ func (r *ClusterInstanceReconciler) reconcileLeaseRefProjection(ctx context.Cont
 }
 
 func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	if result, err := r.reconcileProvisioningCRCVMI(ctx, instance); result != nil || err != nil {
 		if result == nil {
 			return ctrl.Result{}, err
@@ -313,8 +318,8 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 
 	if !res.ready {
 		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
-		if err := r.Status().Update(ctx, instance); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating status while provisioning CRC: %w", err)
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while provisioning CRC"); err != nil {
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
@@ -323,6 +328,7 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 }
 
 func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	// resources.DefaultHostedClusterNamespace, where every hcp instance's
 	// HostedCluster, NodePool, and pull-secret copy live, has no guaranteed
 	// creator. This differs from instance.Namespace (created by whatever
@@ -351,8 +357,8 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 
 	if !res.ready {
 		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
-		if err := r.Status().Update(ctx, instance); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating status while provisioning HyperShift: %w", err)
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while provisioning HyperShift"); err != nil {
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
@@ -364,6 +370,7 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 // checks for a version mismatch against the template's expected OCPVersion,
 // and transitions the instance to Ready.
 func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, ocpVersion, apiEndpoint string, kubeconfig []byte) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	secretName := resources.KubeconfigSecretName(instance.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -434,8 +441,8 @@ func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *bro
 	}
 	apimeta.SetStatusCondition(&instance.Status.Conditions, readyCondition)
 
-	if err := r.Status().Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status to Ready: %w", err)
+	if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status to Ready"); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -450,6 +457,7 @@ func (r *ClusterInstanceReconciler) markFailed(ctx context.Context, instance *br
 // misconfiguration surfaces as a distinct, actionable reason instead of the
 // generic "ReconcileError".
 func (r *ClusterInstanceReconciler) markFailedWithReason(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, reason string, cause error) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	instance.Status.Phase = brokerv1alpha1.PhaseFailed
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
@@ -458,8 +466,10 @@ func (r *ClusterInstanceReconciler) markFailedWithReason(ctx context.Context, in
 		Message:            cause.Error(),
 		ObservedGeneration: instance.Generation,
 	})
-	if err := r.Status().Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status to Failed (original error: %v): %w", cause, err)
+	if !equality.Semantic.DeepEqual(*previousStatus, instance.Status) {
+		if err := r.Status().Update(ctx, instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating status to Failed (original error: %v): %w", cause, err)
+		}
 	}
 	// Return the original error so the controller-runtime work queue retries
 	// with backoff.

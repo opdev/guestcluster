@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -390,6 +391,7 @@ func (r *ClusterLeaseReconciler) releaseBoundInstance(ctx context.Context, lease
 }
 
 func (r *ClusterLeaseReconciler) setPendingCondition(ctx context.Context, lease *brokerv1alpha1.ClusterLease, reason, message string) error {
+	previousStatus := lease.Status.DeepCopy()
 	lease.Status.Phase = brokerv1alpha1.PhaseLeasePending
 	apimeta.SetStatusCondition(&lease.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeLeaseBound,
@@ -398,6 +400,9 @@ func (r *ClusterLeaseReconciler) setPendingCondition(ctx context.Context, lease 
 		Message:            message,
 		ObservedGeneration: lease.Generation,
 	})
+	if equality.Semantic.DeepEqual(*previousStatus, lease.Status) {
+		return nil
+	}
 	if err := r.Status().Update(ctx, lease); err != nil {
 		return fmt.Errorf("updating lease status: %w", err)
 	}
