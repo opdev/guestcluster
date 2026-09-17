@@ -176,8 +176,12 @@ func (r *Runner) copyDataFull(data []byte, remotePath string, mode uint32, sudo 
 // Ported from crc pkg/crc/ssh/ssh.go WaitForConnectivity.
 func WaitForConnectivity(ctx context.Context, host string, port int, interval time.Duration) error {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	for {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		conn, err := dialTCPContext(ctx, dialer, addr)
 		if err == nil {
 			_ = conn.Close()
 			return nil
@@ -188,6 +192,10 @@ func WaitForConnectivity(ctx context.Context, host string, port int, interval ti
 		case <-time.After(interval):
 		}
 	}
+}
+
+var dialTCPContext = func(ctx context.Context, dialer *net.Dialer, addr string) (net.Conn, error) {
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 // DialAPIServer opens a TCP channel through the existing SSH session that

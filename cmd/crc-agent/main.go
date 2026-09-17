@@ -269,7 +269,10 @@ func kubeRESTConfig() (*rest.Config, error) {
 func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigner gossh.Signer) (*clusterInfo, error) {
 	// 1. Wait for SSH
 	log.Info("waiting for CRC VM SSH endpoint", "addr", fmt.Sprintf("%s:%d", cfg.SSHHost, cfg.SSHPort))
-	if err := WaitForConnectivity(ctx, cfg.SSHHost, cfg.SSHPort, cfg.SSHRetryInterval); err != nil {
+	sshReadyCtx, cancelSSHReady := context.WithTimeout(ctx, cfg.SSHReadyTimeout)
+	err := WaitForConnectivity(sshReadyCtx, cfg.SSHHost, cfg.SSHPort, cfg.SSHRetryInterval)
+	cancelSSHReady()
+	if err != nil {
 		return nil, fmt.Errorf("waiting for CRC VM SSH endpoint: %w", err)
 	}
 
