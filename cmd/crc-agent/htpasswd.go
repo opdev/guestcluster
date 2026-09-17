@@ -26,7 +26,6 @@ limitations under the License.
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -48,11 +47,11 @@ func BCryptVerify(hash, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-// BuildHtpasswd constructs the base64-encoded htpasswd file content for the
+// BuildHtpasswd constructs the raw htpasswd file content for the
 // given credential map (username -> plaintext password), preserving any
 // existing lines (externalLines) that belong to unknown users.
-// The result is suitable for the htpasswd key of the htpass-secret Secret in
-// openshift-config (oc patch secret htpass-secret -p '{"data":{"htpasswd":"<result>"}}').
+// The result must be stored as raw bytes in Secret.Data. Callers that create a
+// JSON patch for the Secret must base64-encode it at that boundary.
 //
 // Ported from crc getHtpasswd + compareHtpasswd.
 func BuildHtpasswd(credentials map[string]string, externalLines []string) (string, error) {
@@ -65,27 +64,21 @@ func BuildHtpasswd(credentials map[string]string, externalLines []string) (strin
 		}
 		lines = append(lines, fmt.Sprintf("%s:%s", user, hash))
 	}
-	return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n"))), nil
+	return strings.Join(lines, "\n"), nil
 }
 
-// ParseExternalHtpasswdLines decodes a base64-encoded htpasswd blob (as
-// stored in htpass-secret.data.htpasswd) and returns the lines that do not
+// ParseExternalHtpasswdLines parses raw htpasswd file content (as returned by
+// the Kubernetes client's Secret.Data) and returns the lines that do not
 // belong to any of the named users. This preserves external and unknown
-// users across updates, matching crc's compareHtpasswd behavior. A decode
-// failure is not fatal: the secret may not yet exist, or may not yet hold
-// valid data. This function treats a decode failure the same as "no
-// external users" instead of returning it as an error.
-func ParseExternalHtpasswdLines(b64htpasswd string, ownedUsers []string) []string {
-	decoded, err := base64.StdEncoding.DecodeString(b64htpasswd)
-	if err != nil {
-		return nil
-	}
+// users across updates, matching crc's compareHtpasswd behavior. No base64
+// decode is needed because Secret.Data is already decoded.
+func ParseExternalHtpasswdLines(htpasswd string, ownedUsers []string) []string {
 	owned := make(map[string]bool, len(ownedUsers))
 	for _, u := range ownedUsers {
 		owned[u] = true
 	}
 	var external []string
-	for _, line := range strings.Split(string(decoded), "\n") {
+	for _, line := range strings.Split(htpasswd, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

@@ -48,7 +48,7 @@ import (
 type GuestClients struct {
 	// Core is the standard Kubernetes client set (Secrets, ConfigMaps,
 	// CertificateSigningRequests, etc.).
-	Core *kubernetes.Clientset
+	Core kubernetes.Interface
 	// Dynamic is the dynamic client, used for resources whose Go types are not
 	// available (e.g. config.openshift.io/v1 Ingress, APIServer, Routes).
 	Dynamic dynamic.Interface
