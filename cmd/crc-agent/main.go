@@ -282,7 +282,7 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	stopClosingRunner := closeRunnerOnCancellation(ctx, runner)
 
 	log.Info("running guest-side fixups")
-	guestRes, err := RunGuestFixups(runner, cfg, log)
+	guestRes, err := RunGuestFixups(ctx, runner, cfg, log)
 	stopClosingRunner()
 	if err != nil {
 		_ = runner.Close()
@@ -345,7 +345,7 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	// rollout. That rollout can transiently invalidate the guest's on-disk
 	// kubeconfig while it is being re-rendered, even though cluster
 	// operators already reported Available. See readGuestKubeconfig.
-	bundleKubeconfigRaw, err := readGuestKubeconfig(runner2, 10*time.Minute, 10*time.Second)
+	bundleKubeconfigRaw, err := readGuestKubeconfig(ctx, runner2, 10*time.Minute, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("reading guest kubeconfig: %w", err)
 	}

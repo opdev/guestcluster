@@ -44,6 +44,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -54,6 +55,7 @@ import (
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
+	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/caxu-rh/guestcluster-operator/internal/resources"
@@ -153,7 +155,7 @@ nameserver {{ .IP }}
 // runner must be connected with the original bundle SSH key. After
 // RunGuestFixups returns a non-nil guestResult.SSHSigner, the caller must
 // reconnect using that signer.
-func RunGuestFixups(runner *Runner, cfg config, log logrLike) (*guestResult, error) {
+func RunGuestFixups(ctx context.Context, runner *Runner, cfg config, log logrLike) (*guestResult, error) {
 	// 0. Determine the guest's own internal IP (this can differ from
 	// cfg.SSHHost; see detectGuestIP's doc comment).
 	guestIP, err := detectGuestIP(runner)
@@ -189,7 +191,7 @@ func RunGuestFixups(runner *Runner, cfg config, log logrLike) (*guestResult, err
 
 	// 5. CA bootstrap: install the stable CA+client cert and patch the cluster.
 	log.Info("guest: installing stable admin CA and client cert")
-	res, err := bootstrapCA(runner, cfg.Identity)
+	res, err := bootstrapCA(ctx, runner, cfg.Identity)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap CA: %w", err)
 	}
@@ -341,13 +343,13 @@ func startKubelet(runner *Runner) error {
 //
 // Ported from crc pkg/crc/machine/start.go updateKubeconfig and
 // pkg/crc/cluster/cluster.go EnsureGeneratedClientCAPresentInTheCluster.
-func bootstrapCA(runner *Runner, identity resources.CRCIdentity) (*guestResult, error) {
+func bootstrapCA(ctx context.Context, runner *Runner, identity resources.CRCIdentity) (*guestResult, error) {
 
 	// Read the bundle's admin kubeconfig from the guest, with retries. The
 	// caller started the kubelet a moment ago, and the kubelet may not have
 	// finished (re)writing this file with real cluster data yet. See
 	// readGuestKubeconfig.
-	bundleKubeconfigYAML, err := readGuestKubeconfig(runner, 10*time.Minute, 10*time.Second)
+	bundleKubeconfigYAML, err := readGuestKubeconfig(ctx, runner, 10*time.Minute, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("reading bundle kubeconfig: %w", err)
 	}
@@ -379,7 +381,7 @@ func bootstrapCA(runner *Runner, identity resources.CRCIdentity) (*guestResult, 
 	// starts (static pod scheduling, etcd formation, and so on). Retry until
 	// it responds instead of failing on the first, expected,
 	// connection-refused or TLS error.
-	if err := retryRunPrivileged(runner, patchCmd, 10*time.Minute, 10*time.Second); err != nil {
+	if err := retryRunPrivileged(ctx, runner, patchCmd, 10*time.Minute, 10*time.Second); err != nil {
 		return nil, fmt.Errorf("patch admin-kubeconfig-client-ca: %w", err)
 	}
 
@@ -438,10 +440,20 @@ func bootstrapCA(runner *Runner, identity resources.CRCIdentity) (*guestResult, 
 // against the same, already-further-along, VM happens to succeed, because
 // more wall-clock time passed. Retrying in place avoids depending on that
 // coincidence.
-func readGuestKubeconfig(runner *Runner, timeout, interval time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
+type privilegedRunner interface {
+	RunPrivileged(cmd string) (string, error)
+}
+
+func readGuestKubeconfig(
+	ctx context.Context, runner privilegedRunner, timeout, interval time.Duration,
+) (string, error) {
 	var lastErr error
-	for {
+	var kubeconfig string
+	pollErr := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(pollCtx context.Context) (bool, error) {
+		if err := pollCtx.Err(); err != nil {
+			return false, err
+		}
+
 		raw, err := runner.RunPrivileged("cat /opt/kubeconfig")
 		switch {
 		case err != nil:
@@ -449,15 +461,18 @@ func readGuestKubeconfig(runner *Runner, timeout, interval time.Duration) (strin
 		case !kubeconfigHasClusters([]byte(raw)):
 			lastErr = fmt.Errorf("kubeconfig has no clusters entries yet")
 		default:
-			return raw, nil
+			kubeconfig = raw
+			return true, nil
 		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf(
-				"timed out after %s waiting for a populated guest kubeconfig (last error: %w)", timeout, lastErr,
-			)
+		return false, nil
+	})
+	if pollErr != nil {
+		if lastErr != nil {
+			return "", fmt.Errorf("waiting for a populated guest kubeconfig: %w (last error: %v)", pollErr, lastErr)
 		}
-		time.Sleep(interval)
+		return "", fmt.Errorf("waiting for a populated guest kubeconfig: %w", pollErr)
 	}
+	return kubeconfig, nil
 }
 
 // kubeconfigHasClusters reports whether kubeconfigYAML parses as YAML and has
@@ -471,20 +486,29 @@ func kubeconfigHasClusters(kubeconfigYAML []byte) bool {
 	return ok && len(clusters) > 0
 }
 
-func retryRunPrivileged(runner *Runner, cmd string, timeout, interval time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func retryRunPrivileged(
+	ctx context.Context, runner privilegedRunner, cmd string, timeout, interval time.Duration,
+) error {
 	var lastErr error
-	for {
+	pollErr := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(pollCtx context.Context) (bool, error) {
+		if err := pollCtx.Err(); err != nil {
+			return false, err
+		}
+
 		_, err := runner.RunPrivileged(cmd)
 		if err == nil {
-			return nil
+			return true, nil
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %s (last error: %w)", timeout, lastErr)
+		return false, nil
+	})
+	if pollErr != nil {
+		if lastErr != nil {
+			return fmt.Errorf("retrying privileged command: %w (last error: %v)", pollErr, lastErr)
 		}
-		time.Sleep(interval)
+		return fmt.Errorf("retrying privileged command: %w", pollErr)
 	}
+	return nil
 }
 
 // spliceClientCertIntoKubeconfig reads a YAML kubeconfig, finds the admin
