@@ -313,7 +313,8 @@ func updatePasswords(ctx context.Context, clients *GuestClients, kubeadminPass, 
 		return fmt.Errorf("building htpasswd: %w", err)
 	}
 
-	patch := fmt.Sprintf(`{"data":{"htpasswd":%q}}`, htpasswd)
+	patchValue := base64.StdEncoding.EncodeToString([]byte(htpasswd))
+	patch := fmt.Sprintf(`{"data":{"htpasswd":%q}}`, patchValue)
 	_, err = clients.Core.CoreV1().Secrets("openshift-config").
 		Patch(ctx, "htpass-secret", types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	if apierrors.IsNotFound(err) {
