@@ -456,6 +456,7 @@ func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
 // invalidateCRCReadiness removes the one-shot handoff from a previous VMI so
 // the next reconcile creates a fresh crc-agent Job for the current VMI.
 func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, vmiUID, reason, message string) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	if instance.Status.CRC != nil && instance.Status.CRC.VMIUID != "" {
 		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, instance.Status.CRC.VMIUID), Namespace: instance.Namespace}}
 		pending, err := r.deleteIfExists(ctx, job, "stale crc-agent Job")
@@ -491,17 +492,14 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 		Message:            message,
 		ObservedGeneration: instance.Generation,
 	})
-	if err := r.Status().Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status while recovering CRC: %w", err)
+	if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while recovering CRC"); err != nil {
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
 func (r *ClusterInstanceReconciler) recordCRCAPIHealth(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, status metav1.ConditionStatus, reason, message string) error {
-	condition := apimeta.FindStatusCondition(instance.Status.Conditions, conditionTypeGuestAPIReachable)
-	if condition != nil && condition.Status == status && condition.Reason == reason && condition.Message == message {
-		return nil
-	}
+	previousStatus := instance.Status.DeepCopy()
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeGuestAPIReachable,
 		Status:             status,
@@ -509,15 +507,13 @@ func (r *ClusterInstanceReconciler) recordCRCAPIHealth(ctx context.Context, inst
 		Message:            message,
 		ObservedGeneration: instance.Generation,
 	})
-	if err := r.Status().Update(ctx, instance); err != nil {
-		return fmt.Errorf("updating CRC guest API health: %w", err)
-	}
-	return nil
+	return r.updateStatusIfChanged(ctx, instance, previousStatus, "updating CRC guest API health")
 }
 
 // markCRCAPIUnavailable prevents leases from using an unreachable guest API
 // while retaining the VMI handoff and completed agent Job for a later retry.
 func (r *ClusterInstanceReconciler) markCRCAPIUnavailable(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, reason, message string) (ctrl.Result, error) {
+	previousStatus := instance.Status.DeepCopy()
 	instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
 	instance.Status.KubeconfigSecretRef = corev1.LocalObjectReference{}
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
@@ -534,8 +530,8 @@ func (r *ClusterInstanceReconciler) markCRCAPIUnavailable(ctx context.Context, i
 		Message:            message,
 		ObservedGeneration: instance.Generation,
 	})
-	if err := r.Status().Update(ctx, instance); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status while waiting for CRC guest API: %w", err)
+	if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while waiting for CRC guest API"); err != nil {
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
