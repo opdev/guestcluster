@@ -51,9 +51,8 @@ const defaultNodePoolRootVolumeSize = "32Gi"
 // pull-secret to use. namespace is the HostedCluster's own namespace,
 // because LocalObjectReference resolves relative to the referencing
 // object. The caller resolves pullSecretName, either from the template's
-// explicit PullSecretRef, or from a materialized copy of the management
-// cluster's own default pull secret (see
-// ClusterInstanceReconciler.resolvePullSecret).
+// explicit PullSecretRef, or from a materialized copy of the namespace's
+// default pull secret (see ClusterInstanceReconciler.resolvePullSecret).
 //
 // nodePortAddress must be a reachable address on the raw NodePort number
 // assigned to the Services[APIServer] NodePort Service. In practice, this

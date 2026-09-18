@@ -506,53 +506,51 @@ func (r *ClusterInstanceReconciler) ensureNamespace(ctx context.Context, name st
 // targetNamespace differs, it copies the Secret there under the deterministic
 // per-instance name. This is the explicit-override path, for example for
 // disconnected or mirrored registries that need a narrower or different
-// credential than the management cluster's own.
+// credential.
 //
-// If Template.PullSecretRef is unset, the operator defaults to a copy of
-// the management cluster's own global pull secret
-// (ClusterPullSecretNamespace/ClusterPullSecretName), which is present on
-// every OpenShift cluster and already contains
-// quay.io/openshift-release-dev credentials, exactly what provisioning a
-// guest OCP/CRC cluster needs. resolvePullSecret materializes the copy
-// under resources.DefaultPullSecretName(instance.Name) in targetNamespace
-// (kept up to date on drift), so downstream consumers (crc-agent Job
-// mount, HostedCluster.Spec.PullSecret) always reference a concrete Secret
-// in their own namespace, the same as the explicit-ref path.
+// If Template.PullSecretRef is unset, the operator uses the Secret named
+// resources.ClusterPullSecretName in instance.Namespace. An administrator or
+// pool creator must provide this Secret, for example by copying credentials
+// from the management cluster. For a different target namespace, such as the
+// HyperShift HostedCluster namespace, resolvePullSecret materializes a copy
+// under resources.DefaultPullSecretName(instance.Name), kept up to date on
+// drift, so downstream consumers always reference a concrete Secret in their
+// own namespace.
 //
 // reconcileCRC and reconcileHyperShift check this before creating any
-// backing objects, so misconfiguration (missing ref, missing cluster
-// default) surfaces immediately as Phase=Failed rather than a late, opaque
-// provisioning error.
+// backing objects, so misconfiguration (missing ref or namespace default)
+// surfaces immediately as Phase=Failed rather than a late, opaque provisioning
+// error.
 func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, targetNamespace string) (string, error) {
 	ref := instance.Spec.Template.PullSecretRef
-	var data []byte
-	if ref.Name != "" {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: instance.Namespace}, secret); err != nil {
-			if apierrors.IsNotFound(err) {
-				return "", fmt.Errorf("pull secret %s/%s not found", instance.Namespace, ref.Name)
+	secretName := ref.Name
+	if secretName == "" {
+		secretName = resources.ClusterPullSecretName
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: instance.Namespace}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			if ref.Name == "" {
+				return "", fmt.Errorf("template.pullSecretRef is unset and default pull secret %s/%s was not found", instance.Namespace, secretName)
 			}
-			return "", fmt.Errorf("getting pull secret %s/%s: %w", instance.Namespace, ref.Name, err)
+			return "", fmt.Errorf("pull secret %s/%s not found", instance.Namespace, secretName)
 		}
-		if len(secret.Data[resources.PullSecretDataKey]) == 0 {
-			return "", fmt.Errorf("pull secret %s/%s is missing data key %q", instance.Namespace, ref.Name, resources.PullSecretDataKey)
+		if ref.Name == "" {
+			return "", fmt.Errorf("getting default pull secret %s/%s: %w", instance.Namespace, secretName, err)
 		}
-		if targetNamespace == instance.Namespace {
-			return ref.Name, nil
+		return "", fmt.Errorf("getting pull secret %s/%s: %w", instance.Namespace, secretName, err)
+	}
+
+	data := secret.Data[resources.PullSecretDataKey]
+	if len(data) == 0 {
+		if ref.Name == "" {
+			return "", fmt.Errorf("default pull secret %s/%s is missing data key %q", instance.Namespace, secretName, resources.PullSecretDataKey)
 		}
-		data = secret.Data[resources.PullSecretDataKey]
-	} else {
-		clusterSecret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{Name: resources.ClusterPullSecretName, Namespace: resources.ClusterPullSecretNamespace}, clusterSecret); err != nil {
-			if apierrors.IsNotFound(err) {
-				return "", fmt.Errorf("template.pullSecretRef is unset and the cluster's default pull secret %s/%s was not found", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName)
-			}
-			return "", fmt.Errorf("getting cluster default pull secret %s/%s: %w", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, err)
-		}
-		data = clusterSecret.Data[resources.PullSecretDataKey]
-		if len(data) == 0 {
-			return "", fmt.Errorf("cluster default pull secret %s/%s is missing data key %q", resources.ClusterPullSecretNamespace, resources.ClusterPullSecretName, resources.PullSecretDataKey)
-		}
+		return "", fmt.Errorf("pull secret %s/%s is missing data key %q", instance.Namespace, secretName, resources.PullSecretDataKey)
+	}
+	if targetNamespace == instance.Namespace {
+		return secretName, nil
 	}
 
 	copyName := resources.DefaultPullSecretName(instance.Name)

@@ -71,7 +71,7 @@ func TestDesiredReplicas(t *testing.T) {
 func TestReconcileHyperShiftCopiesExplicitPullSecret(t *testing.T) {
 	ctx := context.Background()
 	instance := &brokerv1alpha1.ClusterInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "hcp-pull-secret", Namespace: "tenant"},
+		ObjectMeta: metav1.ObjectMeta{Name: "hcp-pull-secret", Namespace: pullSecretTestNamespace},
 		Spec: brokerv1alpha1.ClusterInstanceSpec{
 			Type: brokerv1alpha1.TopologyHCP,
 			Template: brokerv1alpha1.ClusterTemplate{

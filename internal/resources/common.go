@@ -228,22 +228,16 @@ const CRCAPIHostnameEnvVar = "CRC_API_HOSTNAME"
 // key mounted into the crc-agent Job.
 const PullSecretDataKey = ".dockerconfigjson"
 
-// ClusterPullSecretNamespace and ClusterPullSecretName identify the global
-// pull secret every OpenShift cluster carries (the one `oc get secret
-// pull-secret -n openshift-config` reads). When a ClusterTemplate leaves
-// PullSecretRef unset, the operator defaults to a copy of this Secret. This
-// avoids requiring an admin to separately provide a credential the
-// management cluster already has.
-const (
-	ClusterPullSecretNamespace = "openshift-config"
-	ClusterPullSecretName      = "pull-secret"
-)
+// ClusterPullSecretName is the default pull-secret name expected in the
+// ClusterInstance's namespace when ClusterTemplate.PullSecretRef is unset.
+// Administrators or pool creators can populate it by copying credentials from
+// another source, including the management cluster's own pull secret.
+const ClusterPullSecretName = "pull-secret"
 
 // DefaultPullSecretName is the deterministic name of the per-instance Secret
 // the operator creates when it must materialize a pull secret in a different
-// namespace. The operator places it in whatever namespace the topology needs:
-// the instance's own namespace for crc, or the HostedCluster's namespace for
-// hcp. See resolvePullSecret in the ClusterInstance controller.
+// namespace, such as the HostedCluster namespace for hcp. See resolvePullSecret
+// in the ClusterInstance controller.
 func DefaultPullSecretName(instanceName string) string {
 	return instanceName + "-pull-secret"
 }

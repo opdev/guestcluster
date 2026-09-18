@@ -43,25 +43,12 @@ const metricsServiceName = "guestcluster-operator-controller-manager-metrics-ser
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "guestcluster-operator-metrics-binding"
 
-// openshiftConfigNamespace is the namespace that holds the management
-// cluster's own global pull secret. On a real OpenShift cluster this
-// namespace always exists; on a plain Kind cluster (used by this e2e suite)
-// it does not, so `make deploy` fails when it applies the RBAC objects in
-// config/openshift-config-rbac. See ClusterInstanceReconciler.resolvePullSecret.
-const openshiftConfigNamespace = "openshift-config"
-
 const crcRecoveryNamespace = "crc-recovery-e2e"
 
 const crcRecoveryInstanceName = "crc-vmi-recovery"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
-
-	// openshiftConfigNamespaceCreated tracks whether this suite created the
-	// openshift-config namespace, so AfterAll only removes it if the suite
-	// is the one that added it (e.g. it must be left alone on real OpenShift
-	// clusters where it pre-exists).
-	var openshiftConfigNamespaceCreated bool
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
@@ -77,15 +64,6 @@ var _ = Describe("Manager", Ordered, func() {
 			"pod-security.kubernetes.io/enforce=restricted")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		By("ensuring the openshift-config namespace exists")
-		cmd = exec.Command("kubectl", "get", "ns", openshiftConfigNamespace)
-		if _, err = utils.Run(cmd); err != nil {
-			cmd = exec.Command("kubectl", "create", "ns", openshiftConfigNamespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create openshift-config namespace")
-			openshiftConfigNamespaceCreated = true
-		}
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
@@ -147,11 +125,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
-		if openshiftConfigNamespaceCreated {
-			By("removing openshift-config namespace")
-			cmd = exec.Command("kubectl", "delete", "ns", openshiftConfigNamespace)
-			_, _ = utils.Run(cmd)
-		}
 	})
 
 	// After each test, check for failures and collect logs, events,

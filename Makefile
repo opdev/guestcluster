@@ -121,8 +121,8 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet setup-envtest kustomize ## Run tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" KUSTOMIZE="$(KUSTOMIZE)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # To use a vendor other than Kind, update the setup under 'test/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
@@ -218,8 +218,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+	hack/render-deployment.sh build-installer "$(KUSTOMIZE)" "$(IMG)" "$(CRC_AGENT_IMG)" dist/install.yaml
 
 ##@ Deployment
 
@@ -237,18 +236,11 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
-	# Separate kustomize root: grants read access to openshift-config/pull-secret
-	# (the cluster's own global pull secret), which config/default's namespace
-	# transform would otherwise force into the operator's namespace. See
-	# config/openshift-config-rbac/kustomization.yaml.
-	$(KUSTOMIZE) build config/openshift-config-rbac | $(KUBECTL) apply -f -
+	hack/render-deployment.sh deploy "$(KUSTOMIZE)" "$(KUBECTL)" "$(IMG)" "$(CRC_AGENT_IMG)"
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
-	$(KUSTOMIZE) build config/openshift-config-rbac | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	hack/render-deployment.sh undeploy "$(KUSTOMIZE)" "$(KUBECTL)" "$(IMG)" "$(CRC_AGENT_IMG)" "$(ignore-not-found)"
 
 ##@ Dependencies
 
