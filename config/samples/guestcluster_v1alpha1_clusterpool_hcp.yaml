@@ -26,8 +26,7 @@ spec:
     memory: "8Gi"
     cores: 2
     rootVolumeSize: "32Gi"
-    # Optional: defaults to a copy of the management cluster's own global
-    # pull secret (openshift-config/pull-secret) when omitted. Set explicitly
-    # to override, e.g. for a disconnected/mirrored registry.
+    # Optional: when omitted, use the pull-secret Secret in this namespace.
+    # Create it first, for example by copying openshift-config/pull-secret.
     # pullSecretRef:
     #   name: hypershift-pull-secret

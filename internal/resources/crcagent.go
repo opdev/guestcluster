@@ -110,8 +110,7 @@ func CRCAgentPullSecretPath() string {
 // kubeconfig's server URL. pullSecretName is the name (in
 // instance.Namespace) of the Secret holding the pull-secret to inject into
 // the guest cluster. The caller resolves it, either from the template's
-// explicit PullSecretRef, or from a materialized copy of the management
-// cluster's own default pull secret (see
+// explicit PullSecretRef, or from the namespace's default pull secret (see
 // ClusterInstanceReconciler.resolvePullSecret).
 func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, sshKeySecretName, bundleKeyDataKey, identitySecretName, image, apiHostname, pullSecretName string) *batchv1.Job {
 	labels := CommonLabels(instance)

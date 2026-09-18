@@ -130,12 +130,13 @@ type ClusterTemplate struct {
 
 	// PullSecretRef references a Secret in the ClusterInstance's namespace containing
 	// the pull-secret used to pull the release payload / CRC bundle images. This field
-	// is optional. When unset, the operator defaults to the management cluster's own
-	// global pull secret (the "pull-secret" Secret in the "openshift-config"
-	// namespace), which is present on every OpenShift cluster. For topology=hcp, an
-	// explicit Secret is copied to the HostedCluster's namespace under a per-instance
-	// name before the HostedCluster uses it. Set this field explicitly to use a
-	// different/narrower credential (e.g. one scoped to a disconnected mirror).
+	// is optional. When unset, the operator uses the "pull-secret" Secret in the
+	// ClusterInstance's namespace. An administrator or pool creator must provide that
+	// Secret, for example by copying the management cluster's pull secret into the
+	// pool namespace. For topology=hcp, the Secret is copied to the HostedCluster's
+	// namespace under a per-instance name before the HostedCluster uses it. Set this
+	// field explicitly to use a different credential (e.g. one scoped to a
+	// disconnected mirror).
 	// +optional
 	PullSecretRef corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
 

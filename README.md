@@ -330,14 +330,12 @@ ignores `releaseImage` and `bundleSSHKeyRef` in that case.
 #### Pull secret
 
 `template.pullSecretRef` is **optional**. If you leave it unset, the
-operator defaults to a copy of the management cluster's own global pull
-secret. This is the `pull-secret` Secret in the `openshift-config`
-namespace. Every OpenShift cluster has this Secret already, scoped to
-`quay.io/openshift-release-dev`. So provisioning works out of the box. You
-do not need to supply a credential the cluster already has. This default
-requires the RBAC that `make deploy` installs (see
-[Prerequisites](#prerequisites)). If you deploy manually, apply
-`config/openshift-config-rbac` too.
+operator uses a Secret named `pull-secret` in the same namespace as the
+`ClusterPool` or `ClusterInstance`. An administrator or pool creator must
+create this Secret, for example by copying the management cluster's
+`openshift-config/pull-secret` into the pool namespace. This same-namespace
+default is used by direct manifest and OLM installations without any
+deployment-specific RBAC.
 
 Set `template.pullSecretRef` explicitly to override this default. For
 example, a disconnected or mirrored registry may need a narrower or
@@ -354,7 +352,7 @@ per-instance name before HyperShift uses it.
 
 The affected `ClusterInstance` fails fast in two cases. First, if the
 pull secret is missing or malformed: neither an explicit `pullSecretRef`
-nor the cluster's default pull secret is usable. Second, if the bundle
+nor the namespace's default `pull-secret` is usable. Second, if the bundle
 SSH key is missing or malformed, on the manual path only (the turnkey
 path derives its key from the `CRCBundle` and never checks
 `bundleSSHKeyRef`). In both cases, the operator sets `status.phase:
@@ -556,15 +554,11 @@ On the **management** OpenShift cluster:
   implementation, for example MetalLB. These are standard
   HyperShift-on-KubeVirt prerequisites.
 - A valid pull secret for `quay.io/openshift-release-dev`.
-  `template.pullSecretRef` is optional. It defaults to a copy of the
-  management cluster's own global pull secret, `openshift-config/pull-secret`
-  (see [Pull secret](#pull-secret)). This default requires the operator
-  to have `get` access to that Secret. The RBAC in
-  `config/openshift-config-rbac` grants this access; `make deploy`
-  applies it automatically. To override the default, set
-  `template.pullSecretRef` explicitly, pointing at a `Secret` in the same
-  namespace as the pool or instances. For `hcp`, the operator copies that
-  Secret into the HostedCluster namespace before provisioning.
+  Create a `pull-secret` Secret in each pool or instance namespace, for
+  example by copying `openshift-config/pull-secret` (see
+  [Pull secret](#pull-secret)). `template.pullSecretRef` can name a different
+  Secret in that same namespace. For `hcp`, the operator copies that Secret
+  into the HostedCluster namespace before provisioning.
 - For `crc` pools specifically: an extracted CRC bundle `crc.qcow2`,
   hosted at an HTTP-reachable URL, and a `Secret` holding its
   `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`). See
@@ -578,11 +572,16 @@ On the **management** OpenShift cluster:
 
 ## Getting started
 
-**Install the CRDs and RBAC:**
+**Install the CRDs:**
 
 ```sh
 make install
 ```
+
+Direct manifest deployment renders a temporary copy of the configuration, so
+`make deploy`, `make undeploy`, and `make build-installer` do not modify tracked
+files. These targets use the fixed `guestcluster-operator-system` namespace.
+The OLM bundle and direct manifest targets use the same operator resources.
 
 **Run the manager**, either locally against your current kubeconfig
 context, or deployed in-cluster:
@@ -593,8 +592,23 @@ make run
 
 # or build+push an image and deploy
 make docker-build docker-push IMG=<registry>/guestcluster-operator:tag
-make deploy IMG=<registry>/guestcluster-operator:tag
+make deploy IMG=<registry>/guestcluster-operator:tag \
+  CRC_AGENT_IMG=<registry>/guestcluster-operator-crc-agent:tag
 ```
+
+For an OLM installation, generate, validate, build, and push a bundle, then
+install it with Operator SDK:
+
+```sh
+make bundle IMG=<registry>/guestcluster-operator:tag \
+  CRC_AGENT_IMG=<registry>/guestcluster-operator-crc-agent:tag \
+  BUNDLE_IMG=<registry>/guestcluster-operator-bundle:tag
+make bundle-build bundle-push BUNDLE_IMG=<registry>/guestcluster-operator-bundle:tag
+operator-sdk run bundle <registry>/guestcluster-operator-bundle:<tag>
+```
+
+Bundle installation uses the bundle's generated OLM resources. It does not use
+an additional deployment-specific RBAC path.
 
 Leader election is enabled by default because lease binding uses process-local
 serialization. Use `--leader-elect=false` only when one manager process can
@@ -687,6 +701,9 @@ kubectl delete -k config/samples/
 make uninstall
 make undeploy
 ```
+
+For a bundle installation, use the matching Operator SDK cleanup command
+instead of `make undeploy`.
 
 ## Repository layout
 
