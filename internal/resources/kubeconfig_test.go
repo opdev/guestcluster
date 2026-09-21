@@ -31,8 +31,9 @@ func sampleKubeconfig(t *testing.T, server string) []byte {
 	cfg := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
 			"cluster": {
-				Server:                   server,
-				CertificateAuthorityData: []byte("original-ca-data"),
+				Server:                server,
+				CertificateAuthority:  "/etc/kubernetes/ca.crt",
+				InsecureSkipTLSVerify: true,
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
@@ -95,5 +96,47 @@ func TestRewriteKubeconfigServer(t *testing.T) {
 func TestRewriteKubeconfigServer_InvalidInput(t *testing.T) {
 	if _, err := RewriteKubeconfigServer([]byte("not a kubeconfig"), "https://example.com", nil); err == nil {
 		t.Error("expected an error for invalid kubeconfig input, got nil")
+	}
+}
+
+func TestRewriteKubeconfigServer_EmptyClusters(t *testing.T) {
+	raw := []byte("apiVersion: v1\nkind: Config\nclusters: []\n")
+
+	out, err := RewriteKubeconfigServer(raw, "https://example.com", []byte("ca"))
+	if err != nil {
+		t.Fatalf("RewriteKubeconfigServer returned error: %v", err)
+	}
+
+	cfg, err := clientcmd.Load(out)
+	if err != nil {
+		t.Fatalf("loading rewritten kubeconfig: %v", err)
+	}
+	if len(cfg.Clusters) != 0 {
+		t.Fatalf("expected no cluster entries, got %d", len(cfg.Clusters))
+	}
+}
+
+func TestRewriteKubeconfigServer_MalformedClusterEntry(t *testing.T) {
+	raw := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: malformed
+`)
+
+	out, err := RewriteKubeconfigServer(raw, "https://example.com", []byte("ca"))
+	if err != nil {
+		t.Fatalf("RewriteKubeconfigServer returned error: %v", err)
+	}
+
+	cfg, err := clientcmd.Load(out)
+	if err != nil {
+		t.Fatalf("loading rewritten kubeconfig: %v", err)
+	}
+	cluster, ok := cfg.Clusters["malformed"]
+	if !ok {
+		t.Fatal("expected malformed cluster entry to be preserved")
+	}
+	if cluster.Server != "https://example.com" {
+		t.Errorf("cluster Server = %q, want %q", cluster.Server, "https://example.com")
 	}
 }
