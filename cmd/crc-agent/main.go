@@ -74,7 +74,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -93,7 +92,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
@@ -352,7 +350,7 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 	if err != nil {
 		return nil, fmt.Errorf("reading guest kubeconfig: %w", err)
 	}
-	externalKubeconfig, err := rewriteKubeconfigServer(
+	externalKubeconfig, err := resources.RewriteKubeconfigServer(
 		[]byte(bundleKubeconfigRaw),
 		fmt.Sprintf("https://%s:443", cfg.APIHostname),
 		fixupRes.ExternalAPICACertPEM,
@@ -363,46 +361,6 @@ func fetchClusterInfo(ctx context.Context, log logrLike, cfg config, bundleSigne
 
 	log.Info("cluster is up", "ocpVersion", fixupRes.OCPVersion)
 	return &clusterInfo{Kubeconfig: externalKubeconfig, OCPVersion: fixupRes.OCPVersion}, nil
-}
-
-// rewriteKubeconfigServer replaces the server URL and certificate-authority-data
-// of the "admin" cluster entry in a YAML kubeconfig, making the kubeconfig
-// externally routable. The bundle default server
-// (https://api.crc.testing:6443) resolves only inside the VM. Its baked-in
-// CA does not cover the self-signed external-API serving certificate that
-// the cluster fixups apply (cluster.go's applyExternalAPIPatches). For this
-// reason, caCertPEM (that same self-signed cert, which is its own trust
-// root) replaces the original CA data, instead of disabling TLS
-// verification outright.
-func rewriteKubeconfigServer(kubeconfigYAML []byte, newServer string, caCertPEM []byte) ([]byte, error) {
-	var kc map[string]interface{}
-	if err := k8syaml.Unmarshal(kubeconfigYAML, &kc); err != nil {
-		return nil, fmt.Errorf("parsing kubeconfig: %w", err)
-	}
-
-	clusters, ok := kc["clusters"].([]interface{})
-	if !ok || len(clusters) == 0 {
-		return nil, fmt.Errorf("kubeconfig has no clusters entries")
-	}
-	for _, c := range clusters {
-		entry, ok := c.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		clusterField, ok := entry["cluster"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		clusterField["server"] = newServer
-		clusterField["certificate-authority-data"] = base64.StdEncoding.EncodeToString(caCertPEM)
-		delete(clusterField, "certificate-authority")
-	}
-
-	out, err := k8syaml.Marshal(kc)
-	if err != nil {
-		return nil, fmt.Errorf("re-marshalling kubeconfig: %w", err)
-	}
-	return out, nil
 }
 
 // loadSigner reads a private key file and parses it into a gossh.Signer.

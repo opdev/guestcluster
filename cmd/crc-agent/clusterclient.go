@@ -35,6 +35,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 
@@ -67,9 +68,8 @@ func NewGuestClients(
 	clientCertPEM []byte,
 	clientKeyPEM []byte,
 ) (*GuestClients, error) {
-	// TLSFromPEM validates the cert and key, but we don't need to keep the resulting
-	// tls.Certificate (rest.Config uses the raw PEM instead).
-	_, err := TLSFromPEM(clientCertPEM, clientKeyPEM)
+	// Validate the cert and key, but keep the raw PEM because rest.Config uses it.
+	_, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("parsing client cert/key: %w", err)
 	}
