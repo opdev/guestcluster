@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -289,6 +290,9 @@ func newPlatformFakeClient(t *testing.T, objects ...client.Object) client.Client
 	}
 	if err := hyperv1beta1.AddToScheme(s); err != nil {
 		t.Fatalf("adding HyperShift scheme: %v", err)
+	}
+	if err := kubevirtv1.AddToScheme(s); err != nil {
+		t.Fatalf("adding KubeVirt scheme: %v", err)
 	}
 	for _, gvk := range []schema.GroupVersionKind{hyperConvergedGVK, multiClusterEngineGVK, customResourceDefinitionGVK} {
 		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})

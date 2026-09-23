@@ -95,10 +95,41 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
+		// The e2e suite installs KubeVirt CRDs but not the KubeVirt
+		// controllers. If CRC provisioning created a synthetic VM, simulate
+		// KubeVirt recording the Halted run strategy so teardown can safely
+		// remove its VMI. Stop the manager first so it cannot change the VM
+		// while this test state is prepared.
+		By("stopping the controller while preparing synthetic KubeVirt teardown state")
+		cmd = exec.Command("kubectl", "scale", "deployment",
+			"guestcluster-operator-controller-manager", "-n", namespace, "--replicas=0")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		cmd = exec.Command("kubectl", "rollout", "status",
+			"deployment/guestcluster-operator-controller-manager", "-n", namespace, "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		if resourceExists("virtualmachine", crcRecoveryInstanceName, crcRecoveryNamespace) {
+			cmd = exec.Command("kubectl", "patch", "virtualmachine", crcRecoveryInstanceName,
+				"-n", crcRecoveryNamespace, "--subresource=status", "--type=merge", "-p",
+				`{"status":{"runStrategy":"Halted"}}`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to simulate KubeVirt halting the CRC VM")
+		}
+		By("resuming the controller for finalizer cleanup")
+		cmd = exec.Command("kubectl", "scale", "deployment",
+			"guestcluster-operator-controller-manager", "-n", namespace, "--replicas=1")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		cmd = exec.Command("kubectl", "rollout", "status",
+			"deployment/guestcluster-operator-controller-manager", "-n", namespace, "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("removing the CRC recovery instance before undeploying the controller-manager")
 		cmd = exec.Command("kubectl", "delete", "clusterinstance", crcRecoveryInstanceName,
 			"-n", crcRecoveryNamespace, "--ignore-not-found", "--wait=true", "--timeout=2m")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to remove CRC recovery instance")
 
 		By("removing the CRC recovery namespace before uninstalling CRDs")
