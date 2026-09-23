@@ -189,22 +189,20 @@ type ClusterPoolSpec struct {
 	// +kubebuilder:validation:Required
 	Type ClusterTopology `json:"type"`
 
-	// MaxSize is the hard budget cap: the pool will never have more than this many
-	// ClusterInstances (Ready+Leased+Provisioning) at once. Enforced by the
-	// ClusterPool controller and used by the ClusterLease controller to decide
-	// whether a new instance may be provisioned on-demand.
+	// MaxSize is the hard budget cap. The pool will never have more than this
+	// many ClusterInstances at once. Failed and terminating instances count
+	// toward this limit. The ClusterPool controller enforces this limit.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Minimum=1
 	MaxSize int32 `json:"maxSize"`
 
-	// MinSize is the minimum number of ClusterInstances (any non-terminal phase,
-	// Provisioning, Ready, or Leased) the pool controller keeps in existence at all
-	// times, independent of lease demand. Unlike WarmSpares, this is a stable,
-	// total-count floor. An instance transitioning Ready->Leased (or back) does not
-	// change how many instances count against it, so top-up/scale-down against
-	// MinSize cannot race with ClusterLease binding. 0 (the default) means the pool
-	// may shrink to zero instances when there is no demand and WarmSpares is also 0
-	// (pure on-demand provisioning). Subject to MaxSize.
+	// MinSize is the minimum number of ClusterInstances the pool keeps in
+	// existence, independent of lease demand. A deleting instance remains in
+	// this count until its backing-resource cleanup completes. Unlike
+	// WarmSpares, MinSize is a stable total-count floor. A lease binding does not
+	// change the total count, so MinSize cannot race with lease binding. The
+	// default value 0 allows the pool to shrink to zero when no leases need an
+	// instance and WarmSpares is also 0. MaxSize still applies.
 	// +optional
 	// +kubebuilder:default=0
 	MinSize int32 `json:"minSize,omitempty"`
@@ -227,8 +225,12 @@ type ClusterPoolSpec struct {
 // ClusterPoolStatus defines the observed state of ClusterPool.
 type ClusterPoolStatus struct {
 	// TotalInstances is the current count of ClusterInstances owned by this pool
-	// (any phase except Failed/deleted).
+	// that still exist in the API, including Failed and terminating instances.
 	TotalInstances int32 `json:"totalInstances,omitempty"`
+
+	// TerminatingInstances is the number of deleting ClusterInstances whose
+	// backing-resource cleanup still consumes pool capacity.
+	TerminatingInstances int32 `json:"terminatingInstances,omitempty"`
 
 	// AvailableInstances is the count of Ready, unleased ClusterInstances.
 	AvailableInstances int32 `json:"availableInstances,omitempty"`
@@ -251,6 +253,7 @@ type ClusterPoolStatus struct {
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Max",type=integer,JSONPath=`.spec.maxSize`
 // +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalInstances`
+// +kubebuilder:printcolumn:name="Terminating",type=integer,JSONPath=`.status.terminatingInstances`
 // +kubebuilder:printcolumn:name="Available",type=integer,JSONPath=`.status.availableInstances`
 // +kubebuilder:printcolumn:name="Leased",type=integer,JSONPath=`.status.leasedInstances`
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.conditions[?(@.type=="CapacityAvailable")].reason`

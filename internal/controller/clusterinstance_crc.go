@@ -795,5 +795,20 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 	if err != nil {
 		return false, err
 	}
-	return dvPending, nil
+	if dvPending {
+		return true, nil
+	}
+
+	// CDI normally removes the PVC created for this DataVolume. Wait for that
+	// claim explicitly as well: the ClusterInstance finalizer must continue to
+	// hold pool capacity while storage cleanup lags behind DataVolume deletion.
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name:      resources.DataVolumeName(instance.Name),
+		Namespace: instance.Namespace,
+	}}
+	pvcPending, err := r.deleteIfExists(ctx, pvc, "CRC root disk PVC")
+	if err != nil {
+		return false, err
+	}
+	return pvcPending, nil
 }

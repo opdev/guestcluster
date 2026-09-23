@@ -167,6 +167,60 @@ func TestReconcileDeleteWaitsForAlreadyTerminatingVMI(t *testing.T) {
 	assertInstanceFinalizer(t, ctx, c, instance)
 }
 
+func TestReconcileDeleteCRCWaitsForRootDiskPVC(t *testing.T) {
+	ctx := context.Background()
+	instance := deletingCRCInstance("crc-pvc-teardown", time.Now())
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name:       resources.DataVolumeName(instance.Name),
+		Namespace:  instance.Namespace,
+		Finalizers: []string{"test.example.io/pvc-cleanup"},
+	}}
+	c := newTeardownFakeClient(t, instance, pvc)
+	c.holdPVCDeletes = true
+	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
+	req := ctrlRequest(client.ObjectKeyFromObject(instance))
+
+	result, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	if result.RequeueAfter != requeueInterval {
+		t.Fatalf("first RequeueAfter = %s, want %s", result.RequeueAfter, requeueInterval)
+	}
+	if c.pvcDeleteRequests == 0 {
+		t.Fatal("root disk PVC deletion was not requested")
+	}
+	assertObjectExists(t, ctx, c, pvc)
+	assertInstanceFinalizer(t, ctx, c, instance)
+
+	c.holdPVCDeletes = false
+	result, err = r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if result.RequeueAfter != requeueInterval {
+		t.Fatalf("second RequeueAfter = %s, want %s", result.RequeueAfter, requeueInterval)
+	}
+	assertObjectExists(t, ctx, c, pvc)
+	assertInstanceFinalizer(t, ctx, c, instance)
+
+	// The storage controller clears its finalizer only after the volume is
+	// detached and the claim is ready for deletion.
+	currentPVC := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pvc), currentPVC); err != nil {
+		t.Fatalf("getting PVC with pending deletion: %v", err)
+	}
+	currentPVC.Finalizers = nil
+	if err := c.Update(ctx, currentPVC); err != nil {
+		t.Fatalf("finishing PVC cleanup: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("final Reconcile: %v", err)
+	}
+	assertObjectMissing(t, ctx, c, pvc)
+	assertInstanceMissing(t, ctx, c, instance)
+}
+
 func TestReconcileDeleteReportsBlockedVMICleanupTimeout(t *testing.T) {
 	ctx := context.Background()
 	instance := deletingCRCInstance("crc-vmi-timeout", time.Now().Add(-cleanupTimeout-time.Minute))
@@ -366,6 +420,114 @@ func TestReconcileDeleteWaitsForLauncherPodMissingFromCache(t *testing.T) {
 	}
 }
 
+func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
+	for _, deleting := range []bool{false, true} {
+		name := "waiting-for-garbage-collection"
+		if deleting {
+			name = "waiting-for-storage-finalizer"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := &brokerv1alpha1.ClusterPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "hcp-storage", Namespace: teardownTestNamespace},
+				Spec: brokerv1alpha1.ClusterPoolSpec{
+					Type: brokerv1alpha1.TopologyHCP, MaxSize: 2, WarmSpares: 1,
+					Template: verificationTemplateFor(brokerv1alpha1.TopologyHCP),
+				},
+			}
+			instance := deletingCRCInstance("hcp-storage-old", time.Now())
+			instance.Spec.Type = brokerv1alpha1.TopologyHCP
+			instance.Spec.PoolRef = corev1.LocalObjectReference{Name: pool.Name}
+			instance.Labels = resources.PoolLabels(pool.Name)
+			// The parents, VMIs, and launcher pods are already gone. This claim
+			// has no NodePool label and is not yet visible in the cache.
+			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+				Name:      "worker-root-disk",
+				Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name),
+			}}
+			if deleting {
+				pvc.DeletionTimestamp = timePointer(time.Now())
+				pvc.Finalizers = []string{"test.example.io/storage-cleanup"}
+			}
+			otherPVC := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, "other-cluster"),
+			}}
+			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC)
+			c.hidePVCsFromList = true
+			for range 2 {
+				// New reconcilers use only persisted state after a restart.
+				r := &ClusterInstanceReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
+				result, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance)))
+				if err != nil {
+					t.Fatalf("instance Reconcile: %v", err)
+				}
+				if result.RequeueAfter != requeueInterval {
+					t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueInterval)
+				}
+				assertInstanceFinalizer(t, ctx, c, instance)
+				poolReconciler := &ClusterPoolReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
+				if _, err := poolReconciler.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(pool))); err != nil {
+					t.Fatalf("pool Reconcile: %v", err)
+				}
+				instances := &brokerv1alpha1.ClusterInstanceList{}
+				if err := c.List(ctx, instances, client.InNamespace(pool.Namespace), client.MatchingLabels(resources.PoolLabels(pool.Name))); err != nil {
+					t.Fatalf("listing instances: %v", err)
+				}
+				if len(instances.Items) != 1 || instances.Items[0].Name != instance.Name {
+					t.Fatal("pool created a replacement before HCP storage cleanup completed")
+				}
+				storedPool := &brokerv1alpha1.ClusterPool{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(pool), storedPool); err != nil {
+					t.Fatalf("getting pool: %v", err)
+				}
+				if storedPool.Status.TotalInstances != 1 || storedPool.Status.TerminatingInstances != 1 {
+					t.Fatalf("pool status = %+v, want total=1 and terminating=1", storedPool.Status)
+				}
+			}
+			if c.pvcDeleteRequests != 0 {
+				t.Fatal("instance controller requested deletion of HyperShift-owned storage")
+			}
+			// Simulate completion of HyperShift/namespace storage cleanup.
+			if deleting {
+				assertObjectExists(t, ctx, c, pvc)
+				pvc.Finalizers = nil
+				if err := c.Update(ctx, pvc); err != nil {
+					t.Fatalf("removing storage finalizer: %v", err)
+				}
+			} else if err := c.Client.Delete(ctx, pvc); err != nil {
+				t.Fatalf("removing PVC: %v", err)
+			}
+			r := &ClusterInstanceReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
+			if _, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance))); err != nil {
+				t.Fatalf("final instance Reconcile: %v", err)
+			}
+			assertInstanceMissing(t, ctx, c, instance)
+			assertObjectExists(t, ctx, c, otherPVC)
+			poolReconciler := &ClusterPoolReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
+			if _, err := poolReconciler.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(pool))); err != nil {
+				t.Fatalf("pool Reconcile after cleanup: %v", err)
+			}
+			replacement := &brokerv1alpha1.ClusterInstance{}
+			if err := c.Get(ctx, client.ObjectKey{Namespace: pool.Namespace, Name: pool.Name + "-0"}, replacement); err != nil {
+				t.Fatalf("getting replacement after storage cleanup: %v", err)
+			}
+		})
+	}
+}
+
+func TestReconcileDeleteHCPKeepsFinalizerOnPVCListError(t *testing.T) {
+	ctx := context.Background()
+	instance := deletingCRCInstance("hcp-storage-read-error", time.Now())
+	instance.Spec.Type = brokerv1alpha1.TopologyHCP
+	c := newTeardownFakeClient(t, instance)
+	c.pvcListError = apierrors.NewServiceUnavailable("storage API unavailable")
+	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
+	if _, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance))); err == nil {
+		t.Fatal("Reconcile succeeded without confirming PVC cleanup")
+	}
+	assertInstanceFinalizer(t, ctx, c, instance)
+}
+
 func deletingCRCInstance(name string, deletionTime time.Time) *brokerv1alpha1.ClusterInstance {
 	return &brokerv1alpha1.ClusterInstance{
 		ObjectMeta: metav1.ObjectMeta{
@@ -408,12 +570,25 @@ type teardownTestClient struct {
 	client.Client
 	holdVMIDeletes    bool
 	holdPodDeletes    bool
+	holdPVCDeletes    bool
 	hidePodsFromList  bool
+	hidePVCsFromList  bool
+	pvcListError      error
 	vmiDeleteRequests int
 	podDeleteRequests int
+	pvcDeleteRequests int
 }
 
 func (c *teardownTestClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if pvcs, ok := list.(*corev1.PersistentVolumeClaimList); ok {
+		if c.pvcListError != nil {
+			return c.pvcListError
+		}
+		if c.hidePVCsFromList {
+			pvcs.Items = nil
+			return nil
+		}
+	}
 	if pods, ok := list.(*corev1.PodList); ok && c.hidePodsFromList {
 		pods.Items = nil
 		return nil
@@ -431,6 +606,11 @@ func (c *teardownTestClient) Delete(ctx context.Context, obj client.Object, opts
 	case *corev1.Pod:
 		c.podDeleteRequests++
 		if c.holdPodDeletes {
+			return nil
+		}
+	case *corev1.PersistentVolumeClaim:
+		c.pvcDeleteRequests++
+		if c.holdPVCDeletes {
 			return nil
 		}
 	}
@@ -453,7 +633,7 @@ func newTeardownFakeClient(t *testing.T, objects ...client.Object) *teardownTest
 		}
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithStatusSubresource(&brokerv1alpha1.ClusterInstance{}).
+		WithStatusSubresource(&brokerv1alpha1.ClusterInstance{}, &brokerv1alpha1.ClusterPool{}).
 		WithObjects(objects...).Build()
 	return &teardownTestClient{Client: c}
 }

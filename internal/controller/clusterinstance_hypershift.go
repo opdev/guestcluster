@@ -509,5 +509,18 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 			return false, err
 		}
 	}
+
+	// HyperShift and namespace cleanup own storage deletion. A PVC can remain
+	// after its VM and DataVolume are gone. Check the dedicated cluster
+	// namespace without a label filter: generated claims need not carry the
+	// NodePool label. Use a live read so an empty cache cannot release capacity.
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := r.platformReader().List(ctx, pvcs, client.InNamespace(hcpNamespace)); err != nil {
+		return false, fmt.Errorf("listing HyperShift PVCs in namespace %s: %w", hcpNamespace, err)
+	}
+	if len(pvcs.Items) > 0 {
+		logf.FromContext(ctx).Info("waiting for HyperShift PVCs to be deleted", "namespace", hcpNamespace, "count", len(pvcs.Items))
+		return true, nil
+	}
 	return pending, nil
 }

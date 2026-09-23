@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.totalInstances
       name: Total
       type: integer
+    - jsonPath: .status.terminatingInstances
+      name: Terminating
+      type: integer
     - jsonPath: .status.availableInstances
       name: Available
       type: integer
@@ -68,24 +71,22 @@ spec:
             properties:
               maxSize:
                 description: |-
-                  MaxSize is the hard budget cap: the pool will never have more than this many
-                  ClusterInstances (Ready+Leased+Provisioning) at once. Enforced by the
-                  ClusterPool controller and used by the ClusterLease controller to decide
-                  whether a new instance may be provisioned on-demand.
+                  MaxSize is the hard budget cap. The pool will never have more than this
+                  many ClusterInstances at once. Failed and terminating instances count
+                  toward this limit. The ClusterPool controller enforces this limit.
                 format: int32
                 minimum: 1
                 type: integer
               minSize:
                 default: 0
                 description: |-
-                  MinSize is the minimum number of ClusterInstances (any non-terminal phase,
-                  Provisioning, Ready, or Leased) the pool controller keeps in existence at all
-                  times, independent of lease demand. Unlike WarmSpares, this is a stable,
-                  total-count floor. An instance transitioning Ready->Leased (or back) does not
-                  change how many instances count against it, so top-up/scale-down against
-                  MinSize cannot race with ClusterLease binding. 0 (the default) means the pool
-                  may shrink to zero instances when there is no demand and WarmSpares is also 0
-                  (pure on-demand provisioning). Subject to MaxSize.
+                  MinSize is the minimum number of ClusterInstances the pool keeps in
+                  existence, independent of lease demand. A deleting instance remains in
+                  this count until its backing-resource cleanup completes. Unlike
+                  WarmSpares, MinSize is a stable total-count floor. A lease binding does not
+                  change the total count, so MinSize cannot race with lease binding. The
+                  default value 0 allows the pool to shrink to zero when no leases need an
+                  instance and WarmSpares is also 0. MaxSize still applies.
                 format: int32
                 type: integer
               template:
@@ -371,10 +372,16 @@ spec:
                   bound to a ClusterLease.
                 format: int32
                 type: integer
+              terminatingInstances:
+                description: |-
+                  TerminatingInstances is the number of deleting ClusterInstances whose
+                  backing-resource cleanup still consumes pool capacity.
+                format: int32
+                type: integer
               totalInstances:
                 description: |-
                   TotalInstances is the current count of ClusterInstances owned by this pool
-                  (any phase except Failed/deleted).
+                  that still exist in the API, including Failed and terminating instances.
                 format: int32
                 type: integer
             type: object

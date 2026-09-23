@@ -44,9 +44,10 @@ import (
 // pool's budget along three independent floors, always bounded by
 // Spec.MaxSize. This is analogous to a cluster autoscaler's node-group
 // min/max size plus over-provisioning ("pause pod") pattern:
-//   - Spec.MinSize: a stable, total-count floor (any non-terminal phase:
-//     Provisioning, Ready, or claimed-by-a-lease), i.e. an autoscaler-style
-//     minimum node-group size, independent of current demand.
+//   - Spec.MinSize: a stable total-count floor, independent of current demand.
+//     Every ClusterInstance object still present in the API counts, including
+//     Failed and terminating instances. Deletion frees that capacity only
+//     after the ClusterInstance finalizer completes backing-resource cleanup.
 //   - Spec.WarmSpares: a spare-capacity floor measured against Ready,
 //     UNCLAIMED instances, kept ahead of demand (autoscaler
 //     over-provisioning) so a ClusterLease can bind instantly instead of
@@ -161,9 +162,10 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// total, available, leasedCount, and pending come from every
 	// ClusterInstance this pool owns; see computeInstanceAccounting's doc
 	// for the accounting rules.
-	total, available, leasedCount, pending, availableInstances := computeInstanceAccounting(instanceList, claimed)
+	total, available, leasedCount, pending, terminating, availableInstances := computeInstanceAccounting(instanceList, claimed)
 
 	pool.Status.TotalInstances = total
+	pool.Status.TerminatingInstances = terminating
 	pool.Status.AvailableInstances = available
 	pool.Status.LeasedInstances = leasedCount
 
@@ -176,7 +178,8 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	//   - demandNeed: a Pending lease grabs a Ready+unclaimed instance
 	//     (available) or one still provisioning (pending) as soon as that
 	//     instance becomes Ready, so only demand beyond that requires NEW
-	//     supply.
+	//     supply. A deleting instance also counts as pending until cleanup
+	//     completes, to prevent a replacement from overlapping its teardown.
 	// Reconcile creates one instance per reconcile, for thundering-herd
 	// avoidance and to keep each Create() error individually retryable,
 	// for whichever floor currently drives the largest deficit.
@@ -193,7 +196,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	room := pool.Spec.MaxSize - total
 
 	log.V(1).Info("evaluated pool capacity",
-		"pool", pool.Name, "total", total, "available", available, "pending", pending, "leasedCount", leasedCount,
+		"pool", pool.Name, "total", total, "available", available, "pending", pending, "terminating", terminating, "leasedCount", leasedCount,
 		"pendingDemand", pendingDemand, "minSizeNeed", minSizeNeed, "warmSpareNeed", warmSpareNeed,
 		"demandNeed", demandNeed, "need", need, "room", room)
 
@@ -301,16 +304,25 @@ func computeLeaseAccounting(leaseList *brokerv1alpha1.ClusterLeaseList, poolName
 }
 
 // computeInstanceAccounting derives the pool's current supply counts from
-// every non-terminating ClusterInstance in instanceList. claimed comes from
-// computeLeaseAccounting.
-func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList, claimed map[string]bool) (total, available, leasedCount, pending int32, availableInstances []*brokerv1alpha1.ClusterInstance) {
+// every ClusterInstance in instanceList. A deleting instance remains in total
+// and pending until its finalizer removes it after backing-resource cleanup.
+// Terminating instances do not count as available or leased.
+// This holds its capacity across controller restarts and cache lag because
+// the deletion timestamp and finalizer are stored on the API object. claimed
+// comes from computeLeaseAccounting.
+func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList, claimed map[string]bool) (total, available, leasedCount, pending, terminating int32, availableInstances []*brokerv1alpha1.ClusterInstance) {
 	for i := range instanceList.Items {
 		inst := &instanceList.Items[i]
+		total++
 		if !inst.DeletionTimestamp.IsZero() {
-			// Being torn down; does not count against the budget.
+			// Do not create a replacement while backing-resource cleanup is
+			// in progress. The ClusterInstance finalizer keeps this API object
+			// present until teardown completes, so its deletion timestamp is
+			// durable accounting state and not an in-memory controller hint.
+			pending++
+			terminating++
 			continue
 		}
-		total++
 		switch inst.Status.Phase {
 		case brokerv1alpha1.PhaseReady:
 			if claimed[inst.Name] {
@@ -344,7 +356,7 @@ func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList,
 			pending++
 		}
 	}
-	return total, available, leasedCount, pending, availableInstances
+	return total, available, leasedCount, pending, terminating, availableInstances
 }
 
 // capacityCondition summarizes, for external consumers, whether the pool's

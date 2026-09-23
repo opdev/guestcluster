@@ -70,7 +70,7 @@ func TestClusterLeaseReconcileBoundSchedulesAtTTLDeadline(t *testing.T) {
 					Finalizers: []string{leaseFinalizer},
 				},
 				Spec: brokerv1alpha1.ClusterLeaseSpec{
-					PoolRef: corev1.LocalObjectReference{Name: "ttl-pool"},
+					PoolRef: corev1.LocalObjectReference{Name: testTTLPoolName},
 					TTL:     tt.ttl,
 				},
 				Status: brokerv1alpha1.ClusterLeaseStatus{
@@ -154,7 +154,7 @@ func TestClusterLeaseReconcileBoundUsesUpdatedTTLDeadline(t *testing.T) {
 			Finalizers: []string{leaseFinalizer},
 		},
 		Spec: brokerv1alpha1.ClusterLeaseSpec{
-			PoolRef: corev1.LocalObjectReference{Name: "ttl-pool"},
+			PoolRef: corev1.LocalObjectReference{Name: testTTLPoolName},
 			TTL:     &metav1.Duration{Duration: 5 * time.Minute},
 		},
 		Status: brokerv1alpha1.ClusterLeaseStatus{

@@ -25,9 +25,10 @@ import (
 // literals) so the reconcile logic under test always sees identical fixture
 // data no matter which spec file constructs it.
 const (
-	testNamespace  = "default"
-	testOCPVersion = "4.16.0"
-	testMemory     = "16Gi"
+	testNamespace   = "default"
+	testOCPVersion  = "4.16.0"
+	testMemory      = "16Gi"
+	testTTLPoolName = "ttl-pool"
 )
 
 // allVerificationTopologies is the set of topologies the binding-model
