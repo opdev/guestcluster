@@ -439,8 +439,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _[ClusterTopology](#clustertopology)_ | Type is the topology of guest clusters this pool manages. |  | Enum: [crc hcp] <br />Required: \{\} <br /> |
-| `maxSize` _integer_ | MaxSize is the hard budget cap: the pool will never have more than this many<br />ClusterInstances (Ready+Leased+Provisioning) at once. Enforced by the<br />ClusterPool controller and used by the ClusterLease controller to decide<br />whether a new instance may be provisioned on-demand. |  | Minimum: 1 <br />Required: \{\} <br /> |
-| `minSize` _integer_ | MinSize is the minimum number of ClusterInstances (any non-terminal phase,<br />Provisioning, Ready, or Leased) the pool controller keeps in existence at all<br />times, independent of lease demand. Unlike WarmSpares, this is a stable,<br />total-count floor. An instance transitioning Ready->Leased (or back) does not<br />change how many instances count against it, so top-up/scale-down against<br />MinSize cannot race with ClusterLease binding. 0 (the default) means the pool<br />may shrink to zero instances when there is no demand and WarmSpares is also 0<br />(pure on-demand provisioning). Subject to MaxSize. | 0 | Optional: \{\} <br /> |
+| `maxSize` _integer_ | MaxSize is the hard budget cap. The pool will never have more than this<br />many ClusterInstances at once. Failed and terminating instances count<br />toward this limit. The ClusterPool controller enforces this limit. |  | Minimum: 1 <br />Required: \{\} <br /> |
+| `minSize` _integer_ | MinSize is the minimum number of ClusterInstances the pool keeps in<br />existence, independent of lease demand. A deleting instance remains in<br />this count until its backing-resource cleanup completes. Unlike<br />WarmSpares, MinSize is a stable total-count floor. A lease binding does not<br />change the total count, so MinSize cannot race with lease binding. The<br />default value 0 allows the pool to shrink to zero when no leases need an<br />instance and WarmSpares is also 0. MaxSize still applies. | 0 | Optional: \{\} <br /> |
 | `warmSpares` _integer_ | WarmSpares is the number of Ready, unleased ClusterInstances the pool<br />controller tries to keep provisioned ahead of demand, so that a ClusterLease<br />can bind instantly instead of waiting for a full provision. This floor is<br />measured against spare (available) capacity, so it rises with load. Under N<br />active leases the pool targets roughly N+WarmSpares total instances. Subject<br />to MaxSize. (Formerly named MinAvailable.) | 0 | Optional: \{\} <br /> |
 | `template` _[ClusterTemplate](#clustertemplate)_ | Template describes how to provision new ClusterInstances for this pool. |  | Required: \{\} <br /> |
 
@@ -458,7 +458,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `totalInstances` _integer_ | TotalInstances is the current count of ClusterInstances owned by this pool<br />(any phase except Failed/deleted). |  |  |
+| `totalInstances` _integer_ | TotalInstances is the current count of ClusterInstances owned by this pool<br />that still exist in the API, including Failed and terminating instances. |  |  |
+| `terminatingInstances` _integer_ | TerminatingInstances is the number of deleting ClusterInstances whose<br />backing-resource cleanup still consumes pool capacity. |  |  |
 | `availableInstances` _integer_ | AvailableInstances is the count of Ready, unleased ClusterInstances. |  |  |
 | `leasedInstances` _integer_ | LeasedInstances is the count of ClusterInstances currently bound to a ClusterLease. |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#condition-v1-meta) array_ | Conditions represent the latest available observations of the pool's state. |  | Optional: \{\} <br /> |
