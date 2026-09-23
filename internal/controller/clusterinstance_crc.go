@@ -655,21 +655,11 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		}
 	}
 
-	vm := &kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{
-		Name:      resources.VMName(instance.Name),
-		Namespace: instance.Namespace,
-	}}
-	if err := deleteObject(vm, "CRC VirtualMachine"); err != nil {
+	vmCleanupPending, err := r.teardownCRCVMAndStorage(ctx, instance)
+	if err != nil {
 		return false, err
 	}
-
-	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
-		Name:      resources.DataVolumeName(instance.Name),
-		Namespace: instance.Namespace,
-	}}
-	if err := deleteObject(dv, "CRC DataVolume"); err != nil {
-		return false, err
-	}
+	pending = pending || vmCleanupPending
 
 	rawSecrets := &corev1.SecretList{}
 	if err := r.List(ctx, rawSecrets, client.InNamespace(instance.Namespace), client.MatchingLabels{
@@ -707,4 +697,103 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		return false, err
 	}
 	return pending, nil
+}
+
+// teardownCRCVMAndStorage halts the CRC VM, requests VM deletion, then deletes
+// its VMI. It waits for the VMI and its launcher pod to disappear before it
+// deletes the root DataVolume. Each step is safe to repeat on a later reconcile.
+func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
+	vmKey := types.NamespacedName{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}
+	vm := &kubevirtv1.VirtualMachine{}
+	vmExists := true
+	if err := r.platformReader().Get(ctx, vmKey, vm); err != nil {
+		if apierrors.IsNotFound(err) {
+			vmExists = false
+		} else {
+			return false, fmt.Errorf("getting CRC VirtualMachine %s/%s for teardown: %w", vmKey.Namespace, vmKey.Name, err)
+		}
+	}
+
+	if vmExists && vm.DeletionTimestamp.IsZero() &&
+		(vm.Spec.RunStrategy == nil || *vm.Spec.RunStrategy != kubevirtv1.RunStrategyHalted || vm.Spec.Running != nil) {
+		halted := kubevirtv1.RunStrategyHalted
+		vm.Spec.RunStrategy = &halted
+		vm.Spec.Running = nil
+		if err := r.Update(ctx, vm); err != nil {
+			return false, fmt.Errorf("halting CRC VirtualMachine %s/%s for teardown: %w", vmKey.Namespace, vmKey.Name, err)
+		}
+		logf.FromContext(ctx).Info("halted CRC VirtualMachine before deleting its VMI", "virtualMachine", vmKey.Name)
+		// Let the VM controller observe the persisted Halted strategy before
+		// asking it to remove the VMI. This prevents RunStrategyAlways from
+		// recreating the instance during teardown.
+		return true, nil
+	}
+
+	if vmExists && vm.DeletionTimestamp.IsZero() {
+		currentVMI := &kubevirtv1.VirtualMachineInstance{}
+		if err := r.platformReader().Get(ctx, vmKey, currentVMI); err == nil {
+			if vm.Status.RunStrategy != kubevirtv1.RunStrategyHalted {
+				// KubeVirt records the strategy it has processed in VM status.
+				// Wait for that acknowledgement before deleting a live VMI, so a
+				// controller reconcile based on the prior Always strategy cannot
+				// replace the VMI during teardown.
+				return true, nil
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("getting CRC VirtualMachineInstance %s/%s for teardown: %w", vmKey.Namespace, vmKey.Name, err)
+		}
+	}
+
+	vmPending := false
+	var err error
+	if vmExists {
+		vmForDelete := &kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: vmKey.Name, Namespace: vmKey.Namespace}}
+		vmPending, err = r.deleteIfExists(ctx, vmForDelete, "CRC VirtualMachine")
+		if err != nil {
+			return false, err
+		}
+	}
+
+	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: vmKey.Name, Namespace: vmKey.Namespace}}
+	vmiPending, err := r.deleteIfExists(ctx, vmi, "CRC VirtualMachineInstance")
+	if err != nil {
+		return false, err
+	}
+	if vmiPending {
+		return true, nil
+	}
+
+	launcherPods := &corev1.PodList{}
+	// A cached empty list does not prove that launcher cleanup is complete.
+	if err := r.platformReader().List(ctx, launcherPods,
+		client.InNamespace(instance.Namespace),
+		client.MatchingLabels{kubevirtv1.DeprecatedVirtualMachineNameLabel: vmKey.Name},
+	); err != nil {
+		return false, fmt.Errorf("listing CRC virt-launcher pods: %w", err)
+	}
+	launcherPodPending := false
+	for i := range launcherPods.Items {
+		pod := &launcherPods.Items[i]
+		podPending, err := r.deleteIfExists(ctx, pod, "CRC virt-launcher pod")
+		if err != nil {
+			return false, err
+		}
+		launcherPodPending = launcherPodPending || podPending
+	}
+	if launcherPodPending {
+		return true, nil
+	}
+	if vmPending {
+		return true, nil
+	}
+
+	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
+		Name:      resources.DataVolumeName(instance.Name),
+		Namespace: instance.Namespace,
+	}}
+	dvPending, err := r.deleteIfExists(ctx, dv, "CRC DataVolume")
+	if err != nil {
+		return false, err
+	}
+	return dvPending, nil
 }

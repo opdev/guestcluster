@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -471,6 +472,42 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	servingCertSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: servingCertName, Namespace: namespace}}
 	if err := deleteObject(servingCertSecret, "KAS serving certificate"); err != nil {
 		return false, err
+	}
+
+	// HyperShift owns these worker VMIs. Wait for HostedCluster and NodePool
+	// teardown to remove every VMI from this NodePool before checking for
+	// leftover launcher pods. The NodePool label is copied onto the generated
+	// KubeVirt VM/VMI templates and identifies this pool without matching
+	// workers from another HostedCluster.
+	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, name)
+	nodePoolName := resources.NodePoolName(instance.Name)
+	vmis := &kubevirtv1.VirtualMachineInstanceList{}
+	if err := r.platformReader().List(ctx, vmis,
+		client.InNamespace(hcpNamespace),
+		client.MatchingLabels{hyperv1beta1.NodePoolNameLabel: nodePoolName},
+	); err != nil {
+		return false, fmt.Errorf("listing HyperShift worker VMIs for NodePool %s/%s: %w", hcpNamespace, nodePoolName, err)
+	}
+	if len(vmis.Items) > 0 {
+		logf.FromContext(ctx).Info("waiting for HyperShift worker VMIs to be deleted", "namespace", hcpNamespace, "nodePool", nodePoolName, "count", len(vmis.Items))
+		return true, nil
+	}
+
+	// A launcher pod can outlive its VMI briefly. Once no VMI from this
+	// NodePool remains, request normal pod deletion and keep the finalizer
+	// until those pods are gone. Do not force-delete a running VMI.
+	launcherPods := &corev1.PodList{}
+	// A cached empty list does not prove that launcher cleanup is complete.
+	if err := r.platformReader().List(ctx, launcherPods,
+		client.InNamespace(hcpNamespace),
+		client.MatchingLabels{hyperv1beta1.NodePoolNameLabel: nodePoolName},
+	); err != nil {
+		return false, fmt.Errorf("listing HyperShift virt-launcher pods for NodePool %s/%s: %w", hcpNamespace, nodePoolName, err)
+	}
+	for i := range launcherPods.Items {
+		if err := deleteObject(&launcherPods.Items[i], "HyperShift virt-launcher pod"); err != nil {
+			return false, err
+		}
 	}
 	return pending, nil
 }

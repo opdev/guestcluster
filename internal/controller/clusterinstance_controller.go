@@ -50,10 +50,13 @@ const (
 	// requeueInterval is used while waiting for slow external operations
 	// (VM boot, HostedCluster provisioning) to progress.
 	requeueInterval = 20 * time.Second
+	// cleanupTimeout reports a blocked teardown without removing the finalizer.
+	cleanupTimeout = 15 * time.Minute
 
 	conditionTypeReady             = "Ready"
 	conditionTypeVersionMismatch   = "VersionMismatch"
 	conditionTypeGuestAPIReachable = "GuestAPIReachable"
+	conditionTypeTerminating       = "Terminating"
 )
 
 // ClusterInstanceReconciler reconciles a ClusterInstance object
@@ -69,9 +72,10 @@ type ClusterInstanceReconciler struct {
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=nodepools,verbs=get;list;watch;create;update;patch;delete
@@ -635,9 +639,19 @@ func (r *ClusterInstanceReconciler) reconcileDelete(ctx context.Context, instanc
 		pending, err = r.teardownHyperShiftBacking(ctx, instance)
 	}
 	if err != nil {
+		previousStatus := instance.Status.DeepCopy()
+		apimeta.SetStatusCondition(&instance.Status.Conditions, terminationCondition(instance, err))
+		if statusErr := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating teardown condition"); statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("tearing down backing resources: %w; updating teardown condition: %v", err, statusErr)
+		}
 		return ctrl.Result{}, fmt.Errorf("tearing down backing resources: %w", err)
 	}
 	if pending {
+		previousStatus := instance.Status.DeepCopy()
+		apimeta.SetStatusCondition(&instance.Status.Conditions, terminationCondition(instance, nil))
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating teardown condition"); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
@@ -646,6 +660,26 @@ func (r *ClusterInstanceReconciler) reconcileDelete(ctx context.Context, instanc
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+func terminationCondition(instance *brokerv1alpha1.ClusterInstance, cause error) metav1.Condition {
+	reason := "CleanupInProgress"
+	message := "Backing resource cleanup is in progress"
+	if cause != nil {
+		reason = "CleanupError"
+		message = fmt.Sprintf("Backing resource cleanup failed: %v", cause)
+	}
+	if !instance.DeletionTimestamp.IsZero() && time.Since(instance.DeletionTimestamp.Time) >= cleanupTimeout {
+		reason = "CleanupTimedOut"
+		message = fmt.Sprintf("Backing VMIs, virt-launcher pods, or their owners are still deleting after %s; the finalizer remains and cleanup will retry", cleanupTimeout)
+	}
+	return metav1.Condition{
+		Type:               conditionTypeTerminating,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: instance.Generation,
+	}
 }
 
 // instanceForLease maps a ClusterLease event to a reconcile.Request for the
