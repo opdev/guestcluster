@@ -242,11 +242,11 @@ func BuildCRCAPIService(instance *brokerv1alpha1.ClusterInstance) *corev1.Servic
 
 // BuildCRCAPIRoute constructs the passthrough Route that fronts
 // BuildCRCAPIService with an externally-routable hostname, for example
-// api-<instance>.apps.<mgmt-ingress-domain>. Passthrough termination is
-// required, not edge or reencrypt: the guest Kubernetes API requires mTLS
-// client-certificate authentication and SPDY/websocket upgrades (exec,
-// logs, port-forward). Both only work if the router forwards the raw TLS
-// stream to the guest API server untouched.
+// api-<instance-prefix>-<identity-hash>.apps.<mgmt-ingress-domain>.
+// Passthrough termination is required, not edge or reencrypt: the guest
+// Kubernetes API requires mTLS client-certificate authentication and
+// SPDY/websocket upgrades (exec, logs, port-forward). Both only work if the
+// router forwards the raw TLS stream to the guest API server untouched.
 func BuildCRCAPIRoute(instance *brokerv1alpha1.ClusterInstance, host, serviceName string) *routev1.Route {
 	weight := int32(100)
 	return &routev1.Route{
