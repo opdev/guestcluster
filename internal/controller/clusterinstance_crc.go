@@ -587,28 +587,61 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 		return "", fmt.Errorf("getting CRC API Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
 
+	routeKey := types.NamespacedName{Name: resources.CRCAPIRouteName(instance.Name), Namespace: instance.Namespace}
+	existingRoute := &routev1.Route{}
+	if err := r.Get(ctx, routeKey, existingRoute); err == nil {
+		// Keep existing hosts, including hosts from the old naming rule.
+		return existingRoute.Spec.Host, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("getting CRC API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
+	}
+
+	host, err := r.crcAPIHostnameForNewRoute(ctx, instance)
+	if err != nil {
+		return "", err
+	}
+	route := resources.BuildCRCAPIRoute(instance, host, svc.Name)
+	if err := r.Create(ctx, route); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("creating CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
+		}
+		if err := r.Get(ctx, routeKey, existingRoute); err != nil {
+			return "", fmt.Errorf("getting concurrently created CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
+		}
+		return existingRoute.Spec.Host, nil
+	}
+	log.Info("created CRC API Route", "route", route.Name, "host", host)
+	return route.Spec.Host, nil
+}
+
+// crcAPIHostnameForNewRoute preserves the identity hostname when a Route was
+// deleted. Only instances without an identity use the current naming rule and
+// ingress domain. This keeps the certificate and kubeconfig valid on recovery.
+func (r *ClusterInstanceReconciler) crcAPIHostnameForNewRoute(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (string, error) {
+	key := types.NamespacedName{Name: resources.CRCIdentitySecretName(instance.Name), Namespace: instance.Namespace}
+	identity := &corev1.Secret{}
+	if err := r.Get(ctx, key, identity); err == nil {
+		if !metav1.IsControlledBy(identity, instance) {
+			return "", fmt.Errorf("CRC identity secret %s/%s is not controlled by this ClusterInstance", key.Namespace, key.Name)
+		}
+		hostname, err := resources.CRCIdentityHostname(identity.Data)
+		if err != nil {
+			return "", fmt.Errorf("validating CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
+		}
+		return hostname, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("getting CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
+	}
+
 	domain, err := r.mgmtIngressDomain(ctx)
 	if err != nil {
 		return "", fmt.Errorf("resolving management cluster ingress domain: %w", err)
 	}
-	host := resources.APIServerHostname(instance.Name, domain)
-
-	route := resources.BuildCRCAPIRoute(instance, host, svc.Name)
-	existingRoute := &routev1.Route{}
-	if err := r.Get(ctx, types.NamespacedName{Name: route.Name, Namespace: route.Namespace}, existingRoute); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("creating CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
-		}
-		log.Info("created CRC API Route", "route", route.Name, "host", host)
-		return host, nil
-	} else if err != nil {
-		return "", fmt.Errorf("getting CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
+	host, err := resources.CRCAPIServerHostname(instance.Name, instance.Namespace, domain)
+	if err != nil {
+		return "", fmt.Errorf("building CRC API hostname: %w", err)
 	}
-	// The Route already exists. Its host is authoritative because
-	// ensureCRCAPIRoute fixed it at creation time and never mutates it.
-	// Return the existing host rather than the freshly-computed one, in
-	// case the ingress domain has changed since.
-	return existingRoute.Spec.Host, nil
+	return host, nil
 }
 
 // mgmtIngressDomain resolves the management cluster's own ingress domain

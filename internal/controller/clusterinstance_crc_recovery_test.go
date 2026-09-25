@@ -469,7 +469,7 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 			}
 			pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pull-secret", Namespace: instance.Namespace}, Data: map[string][]byte{resources.PullSecretDataKey: []byte("pull")}}
 			sshSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bundle-ssh-key", Namespace: instance.Namespace}, Data: map[string][]byte{"id_rsa": []byte("key")}}
-			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "cluster"}, Spec: configv1.IngressSpec{Domain: "apps.example.test"}}
+			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
 			c := newCRCRecoveryFakeClient(t, instance, vm, vmi, job, pullSecret, sshSecret, ingress)
 			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 

@@ -53,12 +53,12 @@ type hypershiftResult struct {
 //
 // This address must be reachable on the raw NodePort number.
 // apiServerHostname (the "api-<instance>.<mgmt-ingress-domain>" name used
-// for this operator's own admin Route) resolves to the shared ingress
-// router, which only proxies ports 80/443. A NodePort Service differs: it
-// is exposed on *every* node's host IP at that port by kube-proxy,
-// cluster-wide, regardless of which node backs the pod. Testing
-// found this to be a hard requirement, not a nice-to-have. HyperShift's own
-// generated worker bootstrap ignition embeds
+// for this operator's own admin Route) resolves to the shared ingress router,
+// which only proxies ports 80/443. A NodePort Service differs: it is exposed
+// on *every* node's host IP at that port by kube-proxy, cluster-wide,
+// regardless of which node backs the pod. Testing found this to be a hard
+// requirement, not a nice-to-have. HyperShift's own generated worker
+// bootstrap ignition embeds
 // Services[APIServer].NodePort.Address:<assigned-nodeport> verbatim as the
 // kubelet bootstrap kubeconfig's server URL (see
 // kas.ReconcileServiceStatus's NodePort case). Pointing this at the router

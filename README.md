@@ -498,9 +498,26 @@ cluster. So `ensureCRCAPIRoute` (in
   label. It exposes port `6443`.
 - A **passthrough** `Route` (`<instance>-crc-api`, see
   `resources.BuildCRCAPIRoute`), at host
-  `api-<instance>.<mgmt-ingress-domain>`. The operator reads the domain
-  from the management cluster's own `ingresses.config.openshift.io/cluster`.
-  The management cluster's own router fronts this Route.
+  `api-<instance-prefix>-<identity-hash>.<mgmt-ingress-domain>`. The
+  64-bit hash comes from the source namespace and instance name. The operator
+  shortens the readable instance prefix when needed to keep the hostname
+  within DNS length limits. This keeps Route hosts unique when different
+  namespaces use the same instance name. The operator reads the domain from
+  the management cluster's own `ingresses.config.openshift.io/cluster`. The
+  management cluster's own router fronts this Route.
+
+  An existing Route keeps its assigned hostname. The controller uses that
+  hostname for the CRC identity certificate and the `crc-agent` configuration,
+  so an upgrade does not change an active instance's endpoint. An instance
+  with a Route created under the old naming rule keeps that hostname until it
+  is deleted and recreated. This also means that an old conflicting Route is
+  not renamed automatically.
+
+  If the Route is deleted while the instance still exists, the controller
+  restores the hostname from the instance's identity certificate. It validates
+  the identity and its Secret owner before it creates the Route. The stored
+  hostname takes priority over the current naming rule and ingress domain.
+  The existing credentials and kubeconfigs stay valid.
 
 The Route requires passthrough termination, not edge or reencrypt
 termination. The Kubernetes API needs mTLS client-certificate

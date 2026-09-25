@@ -92,8 +92,8 @@ func TestReconcileHyperShiftCopiesExplicitPullSecret(t *testing.T) {
 		Data:       map[string][]byte{resources.PullSecretDataKey: pullSecretData},
 	}
 	ingress := &configv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
-		Spec:       configv1.IngressSpec{Domain: "apps.example.test"},
+		ObjectMeta: metav1.ObjectMeta{Name: statusIngressName},
+		Spec:       configv1.IngressSpec{Domain: statusIngressDomain},
 	}
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},

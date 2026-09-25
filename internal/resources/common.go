@@ -26,8 +26,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // The operator sets LabelManagedBy to this value on every object it creates.
@@ -204,21 +206,94 @@ func CRCAPIRouteName(instanceName string) string {
 	return instanceName + "-crc-api"
 }
 
-// APIServerHostname returns the deterministic, externally-routable admin
-// hostname this operator uses to front a guest cluster's API server. Both
-// the crc path (see ensureCRCAPIRoute) and the hcp path (see
-// ensureHyperShiftBacking) share it, so the naming convention lives in one
-// place.
+// APIServerHostname returns the legacy deterministic hostname used by the
+// HyperShift path. Keep this name stable because existing HostedClusters,
+// serving certificates, and kubeconfigs use it. CRC uses
+// CRCAPIServerHostname because Route hosts must be unique across namespaces.
 func APIServerHostname(instanceName, mgmtIngressDomain string) string {
 	return fmt.Sprintf("api-%s.%s", instanceName, mgmtIngressDomain)
+}
+
+const (
+	crcAPIHostnameHashLength  = 16 // 64 bits of the SHA-256 identity hash.
+	dns1123LabelMaxLength     = 63
+	dns1123SubdomainMaxLength = 253
+)
+
+// CRCAPIServerHostname returns the stable, externally-routable hostname for a
+// CRC ClusterInstance. Its identity hash includes both namespace and instance
+// name, so same-named instances in different namespaces have different Route
+// hosts. It shortens the readable instance-name prefix as needed to keep each
+// DNS label within 63 characters and the full hostname within 253 characters.
+func CRCAPIServerHostname(instanceName, instanceNamespace, mgmtIngressDomain string) (string, error) {
+	if instanceName == "" {
+		return "", fmt.Errorf("instance name must not be empty")
+	}
+	if instanceNamespace == "" {
+		return "", fmt.Errorf("instance namespace must not be empty")
+	}
+
+	labelLimit := dns1123SubdomainMaxLength - len(mgmtIngressDomain) - 1
+	if labelLimit > dns1123LabelMaxLength {
+		labelLimit = dns1123LabelMaxLength
+	}
+	// The label must hold "api-", a separator, and the full hash. If the
+	// ingress domain leaves less space, no valid unique CRC hostname can fit.
+	const labelFixedLength = len("api--") + crcAPIHostnameHashLength
+	if labelLimit < labelFixedLength {
+		return "", fmt.Errorf("management ingress domain %q leaves no room for a unique CRC API hostname", mgmtIngressDomain)
+	}
+
+	identityHash := sha256.Sum256([]byte(instanceNamespace + "\x00" + instanceName))
+	hash := hex.EncodeToString(identityHash[:])[:crcAPIHostnameHashLength]
+	namePrefix := dnsSafeHostnameLabel(instanceName)
+	nameLimit := labelLimit - labelFixedLength
+	if len(namePrefix) > nameLimit {
+		namePrefix = strings.TrimRight(namePrefix[:nameLimit], "-")
+	}
+
+	hostname := fmt.Sprintf("api-%s-%s.%s", namePrefix, hash, mgmtIngressDomain)
+	if problems := validation.IsDNS1123Subdomain(hostname); len(problems) > 0 {
+		return "", fmt.Errorf("generated CRC API hostname %q is not a valid DNS name: %s", hostname, strings.Join(problems, ", "))
+	}
+	return hostname, nil
+}
+
+// dnsSafeHostnameLabel maps a Kubernetes object name to a lowercase DNS
+// label fragment. Kubernetes names can contain dots, which are not valid in
+// a hostname label.
+func dnsSafeHostnameLabel(value string) string {
+	var label strings.Builder
+	lastWasHyphen := false
+	for _, char := range value {
+		switch {
+		case char >= 'A' && char <= 'Z':
+			label.WriteRune(char + ('a' - 'A'))
+			lastWasHyphen = false
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9':
+			label.WriteRune(char)
+			lastWasHyphen = false
+		case char == '-':
+			if !lastWasHyphen {
+				label.WriteRune(char)
+			}
+			lastWasHyphen = true
+		default:
+			if !lastWasHyphen {
+				label.WriteRune('-')
+			}
+			lastWasHyphen = true
+		}
+	}
+	return strings.Trim(label.String(), "-")
 }
 
 // CRCAPIHostnameEnvVar is the environment variable the crc-agent Job reads
 // to learn the externally-routable hostname. This is the Route host the
 // ClusterInstance controller chose (for example
-// api-<instance>.apps.<mgmt-domain>). The crc-agent mints its
-// external-facing serving certificate for this hostname, and rewrites the
-// published kubeconfig's server URL to it. See BuildCRCAgentJob.
+// api-<instance-prefix>-<identity-hash>.apps.<mgmt-domain>). The crc-agent
+// mints its external-facing serving certificate for this hostname, and
+// rewrites the published kubeconfig's server URL to it. See BuildCRCAgentJob.
 const CRCAPIHostnameEnvVar = "CRC_API_HOSTNAME"
 
 // PullSecretDataKey is the conventional data key under which a Kubernetes

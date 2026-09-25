@@ -81,6 +81,24 @@ func CRCIdentityFromSecretData(data map[string][]byte, hostname string) (CRCIden
 	return identity, nil
 }
 
+// CRCIdentityHostname validates the stored identity and returns its serving
+// hostname. Route recovery uses this hostname to preserve existing credentials
+// and kubeconfigs when the Route is missing.
+func CRCIdentityHostname(data map[string][]byte) (string, error) {
+	serving, err := parseCertificate(data[CRCIdentityServingCertKey])
+	if err != nil {
+		return "", fmt.Errorf("parsing CRC serving certificate: %w", err)
+	}
+	if len(serving.DNSNames) != 1 {
+		return "", fmt.Errorf("CRC serving certificate must have exactly one DNS name")
+	}
+	hostname := serving.DNSNames[0]
+	if _, err := CRCIdentityFromSecretData(data, hostname); err != nil {
+		return "", err
+	}
+	return hostname, nil
+}
+
 // NewCRCIdentity creates the credentials that remain stable for the complete
 // ClusterInstance lifetime.
 func NewCRCIdentity(hostname string) (CRCIdentity, error) {

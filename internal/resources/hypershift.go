@@ -371,15 +371,13 @@ func HostedClusterAPIRouteName(instanceName string) string {
 // slow/unreachable dedicated LoadBalancer).
 //
 // host is the operator's own externally-routable admin hostname
-// (api-<instance>.<mgmt-ingress-domain>, computed by the caller; see
-// ClusterInstanceReconciler.mgmtIngressDomain/ensureCRCAPIRoute for the
-// same convention on the CRC path). Unlike an earlier revision of this
-// code, host is deliberately not the same value passed to
-// BuildHostedCluster's nodePortAddress parameter (see that function's doc
-// comment for why conflating the two broke worker bootstrap), so
-// this hostname is not covered by a DNS SAN on the KAS's default serving
-// certificate. Because this Route uses passthrough termination, though,
-// the client's SNI hostname reaches the guest kube-apiserver untouched.
+// (api-<instance>.<mgmt-ingress-domain>, computed by the caller). Unlike an
+// earlier revision of this code, host is deliberately not the same value
+// passed to BuildHostedCluster's nodePortAddress parameter (see that
+// function's doc comment for why conflating the two broke worker bootstrap),
+// so this hostname is not covered by a DNS SAN on the KAS's default serving
+// certificate. Because this Route uses passthrough termination, though, the
+// client's SNI hostname reaches the guest kube-apiserver untouched.
 // BuildHostedCluster's servingCertName/servingCertHostname parameters
 // therefore wire in a dedicated NamedCertificate for this exact hostname,
 // which the KAS serves via SNI, closing that gap without needing
