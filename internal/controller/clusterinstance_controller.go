@@ -19,6 +19,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,6 +58,7 @@ const (
 	conditionTypeVersionMismatch   = "VersionMismatch"
 	conditionTypeGuestAPIReachable = "GuestAPIReachable"
 	conditionTypeTerminating       = "Terminating"
+	conditionTypeCRCAgent          = "CRCAgent"
 )
 
 // ClusterInstanceReconciler reconciles a ClusterInstance object
@@ -73,6 +75,9 @@ type ClusterInstanceReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=core,resources=events,verbs=list
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=list
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;create;update;patch;delete
@@ -316,6 +321,10 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 		if isCRCBootKeyError(err) {
 			return r.markCRCBootKeyUnavailable(ctx, instance, err)
 		}
+		var agentFailure crcAgentFailure
+		if errors.As(err, &agentFailure) {
+			return r.markFailedWithReason(ctx, instance, "AgentJobFailed", err)
+		}
 		return r.markFailed(ctx, instance, err)
 	}
 
@@ -330,6 +339,27 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 
 	if !res.ready {
 		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+		if res.agentCondition != nil {
+			res.agentCondition.ObservedGeneration = instance.Generation
+			apimeta.SetStatusCondition(&instance.Status.Conditions, *res.agentCondition)
+			readyCondition := metav1.Condition{
+				Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: res.agentCondition.Reason,
+				Message: res.agentCondition.Message, ObservedGeneration: instance.Generation,
+			}
+			if res.agentCondition.Status == metav1.ConditionTrue {
+				readyCondition.Reason = "GuestAPIUnavailable"
+				readyCondition.Message = "CRC agent handoff received; guest API is not externally ready yet (see manager logs)"
+			}
+			apimeta.SetStatusCondition(&instance.Status.Conditions, readyCondition)
+		} else {
+			if apimeta.FindStatusCondition(instance.Status.Conditions, conditionTypeCRCAgent) != nil {
+				apimeta.RemoveStatusCondition(&instance.Status.Conditions, conditionTypeCRCAgent)
+				apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+					Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: "CRCBackingPending",
+					Message: "CRC backing resources are not ready for the agent", ObservedGeneration: instance.Generation,
+				})
+			}
+		}
 		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while provisioning CRC"); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -383,6 +413,7 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 // and transitions the instance to Ready.
 func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, ocpVersion, apiEndpoint string, kubeconfig []byte) (ctrl.Result, error) {
 	previousStatus := instance.Status.DeepCopy()
+	apimeta.RemoveStatusCondition(&instance.Status.Conditions, conditionTypeCRCAgent)
 	secretName := resources.KubeconfigSecretName(instance.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -471,6 +502,12 @@ func (r *ClusterInstanceReconciler) markFailed(ctx context.Context, instance *br
 func (r *ClusterInstanceReconciler) markFailedWithReason(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, reason string, cause error) (ctrl.Result, error) {
 	previousStatus := instance.Status.DeepCopy()
 	instance.Status.Phase = brokerv1alpha1.PhaseFailed
+	if reason == "AgentJobFailed" {
+		apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type: conditionTypeCRCAgent, Status: metav1.ConditionFalse, Reason: reason,
+			Message: cause.Error(), ObservedGeneration: instance.Generation,
+		})
+	}
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionFalse,

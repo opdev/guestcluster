@@ -775,12 +775,6 @@ config/samples/                   Example CRs for crc (turnkey + manual), hcp, C
 
 ## Known limitations / TODOs
 
-- The operator observes the crc-agent Job's failure only indirectly. If
-  the post-boot fixups permanently fail, once the Job's `backoffLimit` is
-  exhausted, the raw kubeconfig Secret never appears. The
-  `ClusterInstance` then stays `Provisioning`, with periodic requeue,
-  instead of moving to a hard `Failed` state. A follow-up should watch
-  the Job's status directly and surface a clear failure condition.
 - The operator intentionally fixes the `<instance>-crc-api` `Route`'s hostname at
   creation time, from the management cluster's ingress domain at that
   moment. If the management cluster's own `ingresses.config.openshift.io`
@@ -803,6 +797,33 @@ config/samples/                   Example CRs for crc (turnkey + manual), hcp, C
   This compatibility is not guaranteed across all future OpenShift
   version skew. If this becomes a problem, rebuild the image
   periodically, or pin `OC_CHANNEL`, or vendor your own `oc` binary.
+
+## CRC agent handoff diagnostics
+
+When a CRC instance waits for its kubeconfig, read its `Ready` and `CRCAgent`
+conditions. The message names the agent Job and namespace. A blocked Pod names
+the Pod. `AgentPodPending` and `AgentWorking` mean the Job can still progress;
+`AgentPrerequisiteMissing`, `AgentPodBlocked`, and `AgentPodCreationFailed`
+identify problems that can be corrected. `AgentJobFailed` means the Job has
+failed. `HandoffPending` allows time for the Secret cache to update after the
+Job completes. `HandoffInvalid` means the completed Job did not publish a
+nonempty kubeconfig for the current VMI.
+
+Use the names in the condition message in these commands:
+
+```sh
+kubectl -n <namespace> describe job <job>
+kubectl -n <namespace> get pods -l batch.kubernetes.io/job-name=<job>
+kubectl -n <namespace> describe pod <pod>
+kubectl -n <namespace> get events --sort-by=.lastTimestamp
+kubectl -n <namespace> logs job/<job> -c crc-agent --all-containers=false
+```
+
+For older Jobs, use `-l job-name=<job>` if the first Pod query is empty.
+Check the ServiceAccount and mounted Secret names in the Job Pod template.
+The manager does not have access to the agent's internal error details; use
+the agent logs to find the exact cause of a failed handoff. Do not share
+Secret data or kubeconfig contents when collecting diagnostics.
 
 ## License
 

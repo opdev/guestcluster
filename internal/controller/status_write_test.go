@@ -240,7 +240,7 @@ func TestClusterInstanceCRCProvisioningSkipsUnchangedStatusUpdate(t *testing.T) 
 	}
 	sshSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: statusCRCSSHKey, Namespace: testNamespace},
-		Data:       map[string][]byte{"id_rsa": []byte("key")},
+		Data:       map[string][]byte{crcTestBundleSSHKeyDataKey: []byte("key")},
 	}
 	base := newCRCRecoveryFakeClient(t, instance, pullSecret, sshSecret)
 	c := &countingStatusClient{Client: base}

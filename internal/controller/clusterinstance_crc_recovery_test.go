@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -471,7 +472,7 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 				}}},
 			}
 			pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pull-secret", Namespace: instance.Namespace}, Data: map[string][]byte{resources.PullSecretDataKey: []byte("pull")}}
-			sshSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bundle-ssh-key", Namespace: instance.Namespace}, Data: map[string][]byte{"id_rsa": []byte("key")}}
+			sshSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bundle-ssh-key", Namespace: instance.Namespace}, Data: map[string][]byte{crcTestBundleSSHKeyDataKey: []byte("key")}}
 			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
 			c := newCRCRecoveryFakeClient(t, instance, vm, vmi, job, pullSecret, sshSecret, ingress)
 			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
@@ -488,11 +489,10 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 				t.Fatalf("phase = %s, want Failed", got.Status.Phase)
 			}
 			condition := apimeta.FindStatusCondition(got.Status.Conditions, conditionTypeReady)
-			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "ReconcileError" {
-				t.Fatalf("expected Ready=False with ReconcileError, got %+v", condition)
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "AgentJobFailed" {
+				t.Fatalf("expected Ready=False with AgentJobFailed, got %+v", condition)
 			}
-			wantMessage := fmt.Sprintf("crc-agent Job %s failed: %s", job.Name, reason)
-			if condition.Message != wantMessage {
+			if !strings.Contains(condition.Message, reason) || !strings.Contains(condition.Message, instance.Namespace+"/"+job.Name) {
 				t.Fatalf("condition message = %q", condition.Message)
 			}
 		})
