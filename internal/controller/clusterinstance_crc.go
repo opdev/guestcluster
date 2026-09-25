@@ -55,13 +55,14 @@ const crcReadyRequeueInterval = time.Minute
 // transitions, so this function does not need to know about phase
 // semantics itself.
 type crcResult struct {
-	ready       bool
-	ocpVersion  string
-	kubeconfig  []byte
-	vmName      string
-	dvName      string
-	sshEndpoint string
-	vmiUID      string
+	ready          bool
+	agentCondition *metav1.Condition
+	ocpVersion     string
+	kubeconfig     []byte
+	vmName         string
+	dvName         string
+	sshEndpoint    string
+	vmiUID         string
 	// apiEndpoint is the externally-routable URL of the guest API server
 	// (the passthrough Route host, see ensureCRCAPIRoute). markReady copies
 	// it into ClusterInstanceStatus.APIEndpoint / ClusterLeaseStatus.APIEndpoint.
@@ -226,7 +227,12 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		return res, nil
 	}
 	res.sshEndpoint = vmIP
+	return r.ensureCRCAgentBacking(ctx, instance, res, sshSecretName, sshDataKey, pullSecretName)
+}
 
+func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string) (crcResult, error) {
+	log := logf.FromContext(ctx)
+	vmIP := res.sshEndpoint
 	// Ensure the Service and passthrough Route that expose the guest API
 	// server externally exist; this call is idempotent. The VMI's own
 	// pod-network IP is not routable outside the management cluster. The
@@ -259,14 +265,27 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		log.Info("created crc-agent Job", "job", job.Name, "vmIP", vmIP)
 	} else if err != nil {
 		return res, fmt.Errorf("getting crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
-	} else if err := checkCRCAgentJobFailure(existingJob); err != nil {
-		return res, err
 	}
 
 	// Once the crc-agent Job completes successfully, it publishes the raw
 	// kubeconfig and observed OCP version handoff Secret. checkCRCKubeconfigHandoff
 	// reports whether it has done so yet.
-	kubeconfig, ocpVersion, err := r.checkCRCKubeconfigHandoff(ctx, instance)
+	// The status write that records this VMI can lag behind Job creation.
+	// Inspect the handoff for the VMI we just observed, not the old status.
+	handoffInstance := instance.DeepCopy()
+	if handoffInstance.Status.CRC == nil {
+		handoffInstance.Status.CRC = &brokerv1alpha1.CRCBackingStatus{}
+	}
+	handoffInstance.Status.CRC.VMIUID = res.vmiUID
+	kubeconfig, ocpVersion, err := r.checkCRCKubeconfigHandoff(ctx, handoffInstance)
+	if err != nil {
+		return res, err
+	}
+	// A freshly created Job is not necessarily visible through the cache yet.
+	if existingJob.Name == "" {
+		existingJob = job
+	}
+	res.agentCondition, err = r.inspectCRCAgent(ctx, instance, existingJob, len(kubeconfig) > 0)
 	if err != nil {
 		return res, err
 	}
@@ -292,15 +311,6 @@ func (r *ClusterInstanceReconciler) ensureCRCDataVolume(ctx context.Context, dv 
 		logf.FromContext(ctx).Info("created CRC DataVolume", "dataVolume", dv.Name)
 	} else if err != nil {
 		return fmt.Errorf("getting CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
-	}
-	return nil
-}
-
-func checkCRCAgentJobFailure(job *batchv1.Job) error {
-	for _, condition := range job.Status.Conditions {
-		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
-			return fmt.Errorf("crc-agent Job %s failed: %s", job.Name, condition.Reason)
-		}
 	}
 	return nil
 }
@@ -546,6 +556,7 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 	instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
 	instance.Status.APIEndpoint = ""
 	instance.Status.KubeconfigSecretRef = corev1.LocalObjectReference{}
+	apimeta.RemoveStatusCondition(&instance.Status.Conditions, conditionTypeCRCAgent)
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionFalse,

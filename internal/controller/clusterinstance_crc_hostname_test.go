@@ -134,7 +134,7 @@ func TestEnsureCRCAPIRouteRestoresIdentityHostname(t *testing.T) {
 		t.Run("ingress="+domain, func(t *testing.T) {
 			ctx := context.Background()
 			instance := &brokerv1alpha1.ClusterInstance{
-				ObjectMeta: metav1.ObjectMeta{Name: crcHostnameTestInstanceName, Namespace: crcHostnameTestNamespace, UID: "instance-uid"},
+				ObjectMeta: metav1.ObjectMeta{Name: crcHostnameTestInstanceName, Namespace: crcHostnameTestNamespace, UID: crcTestInstanceUID},
 			}
 			const hostname = "api-crc-pool-abc123.apps.example.test"
 			route := resources.BuildCRCAPIRoute(instance, hostname, resources.CRCAPIServiceName(instance.Name))
@@ -195,7 +195,7 @@ func TestEnsureCRCAPIRouteRejectsInvalidRecoveryIdentity(t *testing.T) {
 		t.Run(invalid, func(t *testing.T) {
 			ctx := context.Background()
 			instance := &brokerv1alpha1.ClusterInstance{
-				ObjectMeta: metav1.ObjectMeta{Name: "crc-instance", Namespace: crcHostnameTestNamespace, UID: "instance-uid"},
+				ObjectMeta: metav1.ObjectMeta{Name: "crc-instance", Namespace: crcHostnameTestNamespace, UID: crcTestInstanceUID},
 			}
 			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
 			c := newCRCRecoveryFakeClient(t, instance, ingress)
