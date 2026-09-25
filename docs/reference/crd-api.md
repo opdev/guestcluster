@@ -37,6 +37,33 @@ _Appears in:_
 | `dataVolumeName` _string_ | DataVolumeName is the CDI DataVolume providing the VM's root disk. |  |  |
 | `sshEndpoint` _string_ | SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for<br />post-boot fixups and kubeconfig extraction. |  |  |
 | `vmiUID` _string_ | VMIUID identifies the VirtualMachineInstance for which the crc-agent<br />completed its post-boot handoff. |  |  |
+| `bootKey` _[CRCBootKeyStatus](#crcbootkeystatus)_ | BootKey records the golden disk and private key used for this instance.<br />It is set before the DataVolume is created and stays fixed for its lifetime. |  | Optional: \{\} <br /> |
+
+
+#### CRCBootKeyStatus
+
+
+
+CRCBootKeyStatus binds a CRCBundle disk to its boot SSH key without storing
+private key material in the ClusterInstance status.
+
+
+
+_Appears in:_
+- [CRCBackingStatus](#crcbackingstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `bundleUID` _string_ |  |  |  |
+| `bundleSHA256` _string_ |  |  |  |
+| `pvcNamespace` _string_ |  |  |  |
+| `pvcName` _string_ |  |  |  |
+| `pvcUID` _string_ |  |  |  |
+| `storageClassName` _string_ |  |  |  |
+| `secretNamespace` _string_ |  |  |  |
+| `secretName` _string_ |  |  |  |
+| `secretUID` _string_ |  |  |  |
+| `keySHA256` _string_ |  |  |  |
 
 
 #### CRCBundle
@@ -490,7 +517,7 @@ _Appears in:_
 | `rootVolumeSize` _string_ | RootVolumeSize is the size of the root disk (e.g. "35Gi"). |  | Optional: \{\} <br /> |
 | `pullSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | PullSecretRef references a Secret in the ClusterInstance's namespace containing<br />the pull-secret used to pull the release payload / CRC bundle images. This field<br />is optional. When unset, the operator uses the "pull-secret" Secret in the<br />ClusterInstance's namespace. An administrator or pool creator must provide that<br />Secret, for example by copying the management cluster's pull secret into the<br />pool namespace. For topology=hcp, the Secret is copied to the HostedCluster's<br />namespace under a per-instance name before the HostedCluster uses it. Set this<br />field explicitly to use a different credential (e.g. one scoped to a<br />disconnected mirror). |  | Optional: \{\} <br /> |
 | `idmsRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | IDMSRef optionally references an ImageDigestMirrorSet-shaped ConfigMap applied at<br />provision time for disconnected/mirrored registries. Interpreted per-topology:<br />for hcp it seeds HostedCluster.spec.imageContentSources; for crc it is applied<br />as an ImageDigestMirrorSet inside the guest cluster post-boot. |  | Optional: \{\} <br /> |
-| `bundleSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | BundleSSHKeyRef references a Secret (in the operator's namespace) containing the<br />CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official<br />.crcbundle, used to reach the booted VM as user "core"), under a data key named<br />"id_ecdsa" or "ssh-privatekey". This field is a FALLBACK. When CRCVersion is set,<br />the operator derives the SSH key automatically from the referenced CRCBundle<br />instead, and this field is ignored. When CRCVersion is unset, this field is<br />required for topology=crc: the crc-agent Job uses this key to SSH into the<br />freshly booted CRC VM and run the post-boot fixups natively (start kubelet,<br />approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the<br />kubeconfig server to the externally-routable API Route hostname the<br />ClusterInstance controller provisions). Ignored for topology=hcp. |  | Optional: \{\} <br /> |
+| `bundleSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the<br />CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official<br />.crcbundle, used to reach the booted VM as user "core"), under a data key named<br />"id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,<br />the operator derives the SSH key automatically from the referenced CRCBundle<br />instead, and this field is ignored. When CRCVersion is unset, this field is<br />required for topology=crc: the crc-agent Job uses this key to SSH into the<br />freshly booted CRC VM and run the post-boot fixups natively (start kubelet,<br />approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the<br />kubeconfig server to the externally-routable API Route hostname the<br />ClusterInstance controller provisions). Ignored for topology=hcp. |  | Optional: \{\} <br /> |
 | `hcpWorkerSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | HCPWorkerSSHKeyRef optionally references a Secret (in the operator's namespace)<br />containing an SSH public key, under a data key named "id_rsa.pub", to inject as<br />an authorized key for the "core" user on every hcp NodePool worker (via<br />HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config<br />generation). This field is only a debugging convenience (e.g. to inspect a<br />worker that is stuck before ever registering as a Node) and has no effect on<br />cluster function. Most deployments should leave it unset. Ignored for<br />topology=crc (see BundleSSHKeyRef for that path's own, unrelated SSH mechanism). |  | Optional: \{\} <br /> |
 | `vmNodeSelector` _object (keys:string, values:string)_ | VMNodeSelector constrains which hypervisor node(s) the guest VM(s) are scheduled to. |  | Optional: \{\} <br /> |
 | `storageClassName` _string_ | StorageClassName is the StorageClass used for VM root/data volumes. |  | Optional: \{\} <br /> |

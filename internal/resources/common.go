@@ -404,6 +404,11 @@ func BundleSSHKeySecretName(version, arch string) string {
 	return CRCBundleName(version, arch) + "-ssh-key"
 }
 
+// CRCBootKeySecretName names the instance-owned copy of a CRCBundle boot key.
+func CRCBootKeySecretName(instanceName string) string {
+	return instanceName + "-crc-boot-key"
+}
+
 // BundleMetadataConfigMapName is the deterministic name of the ConfigMap
 // (in OperatorNamespace) where a CRCBundle's bundle-prep Job writes derived
 // metadata: the bundle's own reported OCP version and the verified sha256

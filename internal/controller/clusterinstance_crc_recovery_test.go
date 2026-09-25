@@ -324,8 +324,11 @@ func TestTeardownCRCBackingDeletesAllVMIHandoffs(t *testing.T) {
 
 	if pending, err := r.teardownCRCBacking(ctx, instance); err != nil {
 		t.Fatalf("teardownCRCBacking: %v", err)
-	} else if pending {
-		t.Fatal("teardownCRCBacking reported pending deletion for objects without finalizers")
+	} else if !pending {
+		t.Fatal("teardownCRCBacking must wait for Job deletion before removing the boot key")
+	}
+	if pending, err := r.teardownCRCBacking(ctx, instance); err != nil || pending {
+		t.Fatalf("teardownCRCBacking retry: pending=%t err=%v", pending, err)
 	}
 	for _, obj := range []client.Object{oldJob, currentJob, oldRaw, currentRaw} {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err == nil {
@@ -445,7 +448,7 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 					Template: brokerv1alpha1.ClusterTemplate{
 						PullSecretRef:   corev1.LocalObjectReference{Name: "pull-secret"},
 						BundleSSHKeyRef: &corev1.LocalObjectReference{Name: "bundle-ssh-key"},
-						Memory:          "16Gi",
+						Memory:          testMemory,
 						Cores:           4,
 					},
 				},
