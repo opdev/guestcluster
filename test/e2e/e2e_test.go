@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -47,6 +48,12 @@ const crcRecoveryNamespace = "crc-recovery-e2e"
 
 const crcRecoveryInstanceName = "crc-vmi-recovery"
 
+const (
+	crcCloneTargetNamespace = "crc-clone-e2e"
+	crcCloneSourcePVC       = "crc-golden-source-e2e"
+	crcClonePayload         = "guestcluster-cross-namespace-clone-check"
+)
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -54,6 +61,10 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
+		By("installing test storage and CDI")
+		Expect(utils.InstallLocalPathProvisioner()).To(Succeed(), "Failed to install the local-path provisioner")
+		Expect(utils.InstallCDI()).To(Succeed(), "Failed to install CDI")
+
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
@@ -337,6 +348,171 @@ var _ = Describe("Manager", Ordered, func() {
 			))
 		})
 
+		It("should clone a CRCBundle-shaped PVC across namespaces through CDI", func() {
+			By("creating a golden-PVC-shaped source claim in the operator namespace")
+			Expect(applyManifest(fmt.Sprintf(`
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+`, crcCloneSourcePVC, namespace))).To(Succeed())
+
+			By("writing test data and unmounting the source claim")
+			Expect(applyManifest(fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crc-clone-source-seed
+  namespace: %s
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: seed
+    image: busybox:1.36.1
+    command:
+    - /bin/sh
+    - -ec
+    - |
+      printf '%%s\n' '%s' > /data/disk.img
+      truncate -s 1048576 /data/disk.img
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: source
+      mountPath: /data
+  volumes:
+  - name: source
+    persistentVolumeClaim:
+      claimName: %s
+`, namespace, crcClonePayload, crcCloneSourcePVC))).To(Succeed())
+			cmd := exec.Command("kubectl", "wait", "--for=jsonpath={.status.phase}=Succeeded",
+				"pod/crc-clone-source-seed", "-n", namespace, "--timeout=5m")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "delete", "pod", "crc-clone-source-seed", "-n", namespace, "--wait=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a target namespace outside the operator namespace")
+			cmd = exec.Command("kubectl", "create", "namespace", crcCloneTargetNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "namespace", crcCloneTargetNamespace,
+					"--ignore-not-found", "--wait=true", "--timeout=2m")
+				_, cleanupErr := utils.Run(cmd)
+				Expect(cleanupErr).NotTo(HaveOccurred())
+			})
+
+			managerUser := fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName)
+			By("checking that CDI clone permission exists only in the source namespace")
+			cmd = exec.Command("kubectl", "auth", "can-i", "create", "datavolumes.cdi.kubevirt.io", "--subresource=source",
+				"--as", managerUser, "-n", namespace)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("yes"))
+			cmd = exec.Command("kubectl", "auth", "can-i", "create", "datavolumes.cdi.kubevirt.io", "--subresource=source",
+				"--as", managerUser, "-n", crcCloneTargetNamespace)
+			authorizationOutput, _ := cmd.CombinedOutput()
+			Expect(strings.TrimSpace(string(authorizationOutput))).To(Equal("no"))
+
+			By("creating a CDI DataVolume as the manager ServiceAccount")
+			cloneManifest := fmt.Sprintf(`
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: crc-cross-namespace-clone-check
+  namespace: %s
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    pvc:
+      name: %s
+      namespace: %s
+  storage:
+    accessModes:
+    - ReadWriteOnce
+    storageClassName: local-path
+    resources:
+      requests:
+        storage: 1Gi
+`, crcCloneTargetNamespace, crcCloneSourcePVC, namespace)
+			Expect(applyManifestAs(cloneManifest, managerUser)).To(Succeed())
+
+			By("waiting for CDI to finish the clone")
+			cmd = exec.Command("kubectl", "wait", "--for=jsonpath={.status.phase}=Succeeded",
+				"datavolume/crc-cross-namespace-clone-check", "-n", crcCloneTargetNamespace, "--timeout=10m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "wait", "--for=jsonpath={.status.phase}=Bound",
+				"pvc/crc-cross-namespace-clone-check", "-n", crcCloneTargetNamespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking that the clone contains the source data")
+			readerPod := fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crc-clone-target-reader
+  namespace: %s
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: reader
+    image: busybox:1.36.1
+    command: ["/bin/sh", "-c", "head -c %d /data/disk.img | grep -Fqx '%s'"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: clone
+      mountPath: /data
+      readOnly: true
+  volumes:
+  - name: clone
+    persistentVolumeClaim:
+      claimName: crc-cross-namespace-clone-check
+`, crcCloneTargetNamespace, len(crcClonePayload)+1, crcClonePayload)
+			Expect(applyManifest(readerPod)).To(Succeed())
+			cmd = exec.Command("kubectl", "wait", "--for=jsonpath={.status.phase}=Succeeded",
+				"pod/crc-clone-target-reader", "-n", crcCloneTargetNamespace, "--timeout=5m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("should invalidate CRC handoff after VMI replacement", func() {
 			By("creating an isolated namespace and readiness identity")
 			cmd := exec.Command("kubectl", "create", "namespace", crcRecoveryNamespace)
@@ -553,6 +729,10 @@ func getMetricsOutput() string {
 }
 
 func applyManifest(manifest string) error {
+	return applyManifestAs(manifest, "")
+}
+
+func applyManifestAs(manifest, user string) error {
 	file, err := os.CreateTemp("", "guestcluster-e2e-*.yaml")
 	if err != nil {
 		return err
@@ -564,7 +744,12 @@ func applyManifest(manifest string) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	_, err = utils.Run(exec.Command("kubectl", "apply", "-f", file.Name()))
+	args := make([]string, 0, 4)
+	if user != "" {
+		args = append(args, "--as", user)
+	}
+	args = append(args, "apply", "-f", file.Name())
+	_, err = utils.Run(exec.Command("kubectl", args...))
 	return err
 }
 

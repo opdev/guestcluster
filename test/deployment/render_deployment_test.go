@@ -85,6 +85,61 @@ func TestBuildInstallerRendersDeploymentAndPreservesSources(t *testing.T) {
 	assertDeploymentSourcesUnchanged(t, repoRoot, sources)
 }
 
+func TestCDICloneSourcePermissionIsLimitedToOperatorNamespace(t *testing.T) {
+	repoRoot := repositoryRoot(t)
+	kustomize := kustomizePath(t, repoRoot)
+	output := filepath.Join(t.TempDir(), "install.yaml")
+	runRenderer(t, repoRoot, nil, "build-installer", kustomize, managerImage, crcAgentImage, output)
+	objects := readManifests(t, output)
+
+	role := resource(t, objects, "Role", "guestcluster-operator-manager-cdi-clone-source")
+	if role.GetNamespace() != defaultNamespace {
+		t.Fatalf("CDI clone source Role namespace = %q, want %q", role.GetNamespace(), defaultNamespace)
+	}
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	if err != nil || !found || len(rules) != 1 {
+		t.Fatalf("CDI clone source Role rules = %#v, want one rule: %v", rules, err)
+	}
+	rule, ok := rules[0].(map[string]interface{})
+	if !ok || !containsString(rule["apiGroups"], "cdi.kubevirt.io") ||
+		!containsString(rule["resources"], "datavolumes/source") || !containsString(rule["verbs"], "create") {
+		t.Fatalf("CDI clone source Role rule = %#v, want create on cdi.kubevirt.io/datavolumes/source", rules[0])
+	}
+
+	binding := resource(t, objects, "RoleBinding", "guestcluster-operator-manager-cdi-clone-source")
+	if binding.GetNamespace() != defaultNamespace {
+		t.Fatalf("CDI clone source RoleBinding namespace = %q, want %q", binding.GetNamespace(), defaultNamespace)
+	}
+	roleName, found, err := unstructured.NestedString(binding.Object, "roleRef", "name")
+	if err != nil || !found || roleName != role.GetName() {
+		t.Fatalf("CDI clone source RoleBinding roleRef.name = %q, want %q: %v", roleName, role.GetName(), err)
+	}
+	subjects, found, err := unstructured.NestedSlice(binding.Object, "subjects")
+	if err != nil || !found || len(subjects) != 1 {
+		t.Fatalf("CDI clone source RoleBinding subjects = %#v, want one manager service account: %v", subjects, err)
+	}
+	subject, ok := subjects[0].(map[string]interface{})
+	validSubject := ok && subject["kind"] == "ServiceAccount" &&
+		subject["name"] == "guestcluster-operator-controller-manager" &&
+		subject["namespace"] == defaultNamespace
+	if !validSubject {
+		t.Fatalf("CDI clone source RoleBinding subject = %#v, want the manager ServiceAccount in %q",
+			subjects[0], defaultNamespace)
+	}
+
+	managerRole := resource(t, objects, "ClusterRole", "guestcluster-operator-manager-role")
+	clusterRules, found, err := unstructured.NestedSlice(managerRole.Object, "rules")
+	if err != nil || !found {
+		t.Fatalf("manager ClusterRole rules = %#v: %v", clusterRules, err)
+	}
+	for _, item := range clusterRules {
+		clusterRule, ok := item.(map[string]interface{})
+		if ok && containsString(clusterRule["resources"], "datavolumes/source") {
+			t.Fatal("manager ClusterRole grants cluster-wide datavolumes/source access")
+		}
+	}
+}
+
 func TestRendererPreservesImageTagsAndDigests(t *testing.T) {
 	repoRoot := repositoryRoot(t)
 	kustomize := kustomizePath(t, repoRoot)
@@ -430,6 +485,19 @@ func manifestKeys(objects []unstructured.Unstructured) string {
 		keys = append(keys, object.GetKind()+"/"+object.GetNamespace()+"/"+object.GetName())
 	}
 	return strings.Join(keys, "\n")
+}
+
+func containsString(value interface{}, want string) bool {
+	values, ok := value.([]interface{})
+	if !ok {
+		return false
+	}
+	for _, item := range values {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func fakeKubectl(t *testing.T) (path, log, captures string) {

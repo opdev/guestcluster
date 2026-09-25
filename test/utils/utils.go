@@ -28,6 +28,14 @@ import (
 )
 
 const (
+	cdiVersion     = "v1.66.1"
+	cdiOperatorURL = "https://github.com/kubevirt/containerized-data-importer/releases/download/" +
+		cdiVersion + "/cdi-operator.yaml"
+	cdiResourceURL = "https://github.com/kubevirt/containerized-data-importer/releases/download/" +
+		cdiVersion + "/cdi-cr.yaml"
+	localPathProvisionerURL = "https://raw.githubusercontent.com/rancher/local-path-provisioner/" +
+		"v0.0.31/deploy/local-path-storage.yaml"
+
 	prometheusOperatorVersion = "v0.77.1"
 	prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
 		"releases/download/%s/bundle.yaml"
@@ -58,6 +66,46 @@ func Run(cmd *exec.Cmd) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// InstallLocalPathProvisioner installs a small dynamic provisioner for the
+// CDI clone integration test. It gives the Kind cluster a StorageClass.
+func InstallLocalPathProvisioner() error {
+	cmd := exec.Command("kubectl", "apply", "-f", localPathProvisionerURL)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("kubectl", "wait", "--for=condition=Available",
+		"deployment/local-path-provisioner", "-n", "local-path-storage", "--timeout=5m")
+	_, err := Run(cmd)
+	return err
+}
+
+// InstallCDI installs the pinned CDI release used by the cross-namespace
+// clone integration test, then waits for its deployments to become available.
+func InstallCDI() error {
+	cmd := exec.Command("kubectl", "apply", "--server-side", "-f", cdiOperatorURL)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+		"crd/cdis.cdi.kubevirt.io", "--timeout=2m")
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("kubectl", "apply", "-f", cdiResourceURL)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	// Waiting for existing deployments can return before the operator creates
+	// its operands. CDI's Available condition includes those operands.
+	cmd = exec.Command("kubectl", "wait", "--for=condition=Available", "cdi/cdi", "--timeout=10m")
+	_, err := Run(cmd)
+	return err
 }
 
 // InstallPrometheusOperator installs the Prometheus Operator, used to export the enabled metrics.

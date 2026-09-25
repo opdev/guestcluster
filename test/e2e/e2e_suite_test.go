@@ -45,7 +45,7 @@ var (
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
-// CertManager.
+// CertManager, CDI, and a local-path StorageClass for the cross-namespace clone test.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting guestcluster-operator integration test suite\n")

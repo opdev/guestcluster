@@ -277,10 +277,21 @@ that object instead. `CRCBundleReconciler` then:
 
 Every `ClusterInstance` created against that pool then **clones** the
 golden PVC, per instance, using CDI's `DataVolumeSourcePVC`. This clone is
-native, cross-namespace, and host-assisted. It needs no re-download and no
-shared mutable disk. The instance uses this clone instead of an HTTP
-`DataVolume` import. It also resolves its crc-agent SSH key directly from
-the `CRCBundle`'s Secret, not from `template.bundleSSHKeyRef`.
+native and cross-namespace. CDI uses a CSI clone or snapshot when available,
+or a host-assisted clone when needed. It needs no re-download and no shared
+mutable disk. The instance uses this clone instead of an HTTP `DataVolume`
+import. It also resolves its crc-agent SSH key directly from the
+`CRCBundle`'s Secret, not from `template.bundleSSHKeyRef`.
+
+CDI checks clone access in the **source PVC's namespace**. Direct-manifest
+and OLM installs give the manager ServiceAccount `create` on
+`datavolumes/source` only in the operator namespace, where this golden PVC
+lives. They do not grant this permission in every namespace. CDI also needs
+the source PVC to be unmounted while it clones it. The default CDI clone
+strategy prefers a CSI clone or snapshot when available and can use a
+host-assisted clone when needed. See CDI's
+[PVC clone guide](https://github.com/kubevirt/containerized-data-importer/blob/main/doc/clone-datavolume.md)
+and [RBAC guide](https://github.com/kubevirt/containerized-data-importer/blob/main/doc/RBAC.md).
 
 The `CRCBundle` object is **cluster-scoped and shared**. Any number of
 `ClusterPool`s or namespaces can reference the same `crcVersion` and
@@ -360,6 +371,19 @@ Failed` and a `Ready=False` condition. The `reason` field reads
 `InvalidPullSecret` or `MissingBundleSSHKey`. This failure happens before
 the operator creates any VM or Job. You get a clear failure, not a late,
 opaque SSH error.
+
+#### Cross-namespace clone integration test
+
+`make test-e2e` runs this test in Kind with CDI `v1.66.1` and the local-path
+StorageClass. The test creates a CRCBundle-shaped source PVC in the operator
+namespace, writes test data, and unmounts it. It then creates a DataVolume in a
+separate namespace as the manager ServiceAccount, waits for CDI to complete the
+clone, and checks the cloned data. It also checks that the manager can create
+`datavolumes/source` in the source namespace but not in the target namespace.
+
+The test uses CDI's real authorization and host-assisted clone path. It runs in
+the e2e workflow. Kind does not test OpenShift-specific CDI packaging or every
+OpenShift Virtualization storage driver.
 
 Bundle certificates expire after ~30 days. For this reason, **recycle
 always re-provisions a fresh VM and re-runs the crc-agent Job from
@@ -561,8 +585,13 @@ On the **management** OpenShift cluster:
   into the HostedCluster namespace before provisioning.
 - For `crc` pools specifically: an extracted CRC bundle `crc.qcow2`,
   hosted at an HTTP-reachable URL, and a `Secret` holding its
-  `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`). See
-  [CRC bundle setup](#crc-bundle-setup) below.
+  `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`) when you use the
+  manual path. The turnkey `CRCBundle` path downloads and prepares these
+  resources for you. For CRCBundle pools outside the operator namespace,
+  create the usual pull-secret in the pool namespace. The cluster's default
+  or selected StorageClass must provision the target DataVolume PVC. The
+  CDI clone permission is scoped to the operator namespace, where the source
+  golden PVC lives. See [CRC bundle setup](#crc-bundle-setup) below.
 - A crc-agent container image, with `oc` installed, pushed somewhere your
   cluster can pull from. Reference this image through the manager's
   `CRC_AGENT_IMAGE` environment variable. See
@@ -741,14 +770,6 @@ config/samples/                   Example CRs for crc (turnkey + manual), hcp, C
   every 10s or 30s for `ClusterLease`. Given multi-minute provisioning
   times, this polling is acceptable. Event-driven watches would still
   reduce convergence latency further.
-- The turnkey CRC bundle path's cross-namespace PVC clone relies on a
-  single, cluster-wide `datavolumes/source: create` RBAC grant, for the
-  manager's `ServiceAccount` (see the `+kubebuilder:rbac` marker on
-  `ClusterInstanceReconciler`). This follows CDI's documented
-  cross-namespace-clone authorization pattern. This project has not
-  independently re-verified the pattern against CDI's source code. If
-  clones fail unexpectedly with a permission error, confirm this pattern
-  against your CDI/OpenShift Virtualization version.
 - `Dockerfile.crc-agent` fetches the `oc` CLI from the `stable-4` mirror
   channel at image-**build** time. This CLI is not pinned to any
   particular CRC bundle's exact OpenShift version. This should remain
