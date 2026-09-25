@@ -7,6 +7,7 @@ resources:
 - service_account.yaml
 - role.yaml
 - role_binding.yaml
+- cdi_clone_source_role.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
 # crc-agent is the ServiceAccount used by the per-ClusterInstance crc-agent Jobs
@@ -44,4 +45,3 @@ resources:
 - clusterpool_admin_role.yaml
 - clusterpool_editor_role.yaml
 - clusterpool_viewer_role.yaml
-

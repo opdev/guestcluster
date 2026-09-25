@@ -82,12 +82,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cdi.kubevirt.io
-  resources:
-  - datavolumes/source
-  verbs:
-  - create
-- apiGroups:
   - config.openshift.io
   resources:
   - ingresses
