@@ -86,10 +86,10 @@ spec:
                 properties:
                   bundleSSHKeyRef:
                     description: |-
-                      BundleSSHKeyRef references a Secret (in the operator's namespace) containing the
+                      BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the
                       CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official
                       .crcbundle, used to reach the booted VM as user "core"), under a data key named
-                      "id_ecdsa" or "ssh-privatekey". This field is a FALLBACK. When CRCVersion is set,
+                      "id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,
                       the operator derives the SSH key automatically from the referenced CRCBundle
                       instead, and this field is ignored. When CRCVersion is unset, this field is
                       required for topology=crc: the crc-agent Job uses this key to SSH into the
@@ -346,6 +346,42 @@ spec:
                 description: CRC holds backing-object references for topology=crc
                   instances.
                 properties:
+                  bootKey:
+                    description: |-
+                      BootKey records the golden disk and private key used for this instance.
+                      It is set before the DataVolume is created and stays fixed for its lifetime.
+                    properties:
+                      bundleSHA256:
+                        type: string
+                      bundleUID:
+                        type: string
+                      keySHA256:
+                        type: string
+                      pvcName:
+                        type: string
+                      pvcNamespace:
+                        type: string
+                      pvcUID:
+                        type: string
+                      secretName:
+                        type: string
+                      secretNamespace:
+                        type: string
+                      secretUID:
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - bundleSHA256
+                    - bundleUID
+                    - keySHA256
+                    - pvcName
+                    - pvcNamespace
+                    - pvcUID
+                    - secretName
+                    - secretNamespace
+                    - secretUID
+                    type: object
                   dataVolumeName:
                     description: DataVolumeName is the CDI DataVolume providing the
                       VM's root disk.

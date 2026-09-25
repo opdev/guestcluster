@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -103,6 +104,9 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 			sshDataKey:    bundleKeyDataKey,
 		}, nil
 	}
+	if binding := crcBootKeyBinding(instance); binding != nil {
+		return boundCRCSource(instance, binding), nil
+	}
 
 	arch := tmpl.CRCArch
 	if arch == "" {
@@ -125,10 +129,13 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 		log.Info(resources.BundleNotReadyMessage(bundle))
 		return nil, nil
 	}
+	if bundle.Status.QCOW2PVCNamespace == "" || bundle.Status.QCOW2PVCRef == nil || bundle.Status.QCOW2PVCRef.Name == "" || bundle.Status.SSHKeySecretRef == nil || bundle.Status.SSHKeySecretRef.Name == "" {
+		return nil, crcBootKeyError{fmt.Errorf("CRCBundle %s has invalid or incomplete Ready disk/SSH key references", bundleName)}
+	}
 	return &crcDataVolumeSource{
 		dv:            resources.BuildCRCDataVolumeFromBundle(instance, bundle),
-		sshSecretName: bundle.Status.SSHKeySecretRef.Name,
-		sshDataKey:    "id_ecdsa", // fixed data key written by the bundle-prep script
+		sshSecretName: resources.CRCBootKeySecretName(instance.Name),
+		sshDataKey:    crcBundleSSHKeyDataKey, // fixed data key written by the bundle-prep script
 	}, nil
 }
 
@@ -157,14 +164,22 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		return res, nil // waiting on a dependency; resolveCRCDataVolumeSource already logged why
 	}
 	dv, sshSecretName, sshDataKey := src.dv, src.sshSecretName, src.sshDataKey
-
-	if err := r.Get(ctx, types.NamespacedName{Name: dv.Name, Namespace: dv.Namespace}, &cdiv1beta1.DataVolume{}); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, dv); err != nil && !apierrors.IsAlreadyExists(err) {
-			return res, fmt.Errorf("creating CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
+	if instance.Spec.Template.CRCVersion != "" {
+		var pending bool
+		sshSecretName, pending, err = r.ensureCRCBootKey(ctx, instance, dv)
+		if err != nil {
+			return res, crcBootKeyError{err}
 		}
-		log.Info("created CRC DataVolume", "dataVolume", dv.Name)
-	} else if err != nil {
-		return res, fmt.Errorf("getting CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
+		if pending {
+			return res, nil
+		}
+		// The bundle may have been re-prepared since this instance's disk
+		// was selected. Always clone from the recorded PVC.
+		dv = boundCRCSource(instance, crcBootKeyBinding(instance)).dv
+	}
+
+	if err := r.ensureCRCDataVolume(ctx, dv); err != nil {
+		return res, err
 	}
 	vm := resources.BuildCRCVirtualMachine(instance, res.dvName)
 	existingVM := &kubevirtv1.VirtualMachine{}
@@ -269,6 +284,18 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 	return res, nil
 }
 
+func (r *ClusterInstanceReconciler) ensureCRCDataVolume(ctx context.Context, dv *cdiv1beta1.DataVolume) error {
+	if err := r.Get(ctx, types.NamespacedName{Name: dv.Name, Namespace: dv.Namespace}, &cdiv1beta1.DataVolume{}); apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, dv); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
+		}
+		logf.FromContext(ctx).Info("created CRC DataVolume", "dataVolume", dv.Name)
+	} else if err != nil {
+		return fmt.Errorf("getting CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
+	}
+	return nil
+}
+
 func checkCRCAgentJobFailure(job *batchv1.Job) error {
 	for _, condition := range job.Status.Conditions {
 		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
@@ -325,6 +352,17 @@ func (r *ClusterInstanceReconciler) ensureCRCIdentity(ctx context.Context, insta
 // reconcileReadyCRC verifies that the published kubeconfig still belongs to
 // the running VMI and can reach the guest API before preserving Ready.
 func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if instance.Spec.Template.CRCVersion != "" {
+		binding := crcBootKeyBinding(instance)
+		if binding == nil {
+			return r.markCRCBootKeyUnavailable(ctx, instance, fmt.Errorf("CRC boot disk/key binding is missing; automatic recovery is unsafe"))
+		}
+		if _, pending, err := r.ensureCRCBootKey(ctx, instance, nil); err != nil {
+			return r.markCRCBootKeyUnavailable(ctx, instance, err)
+		} else if pending {
+			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		}
+	}
 	vmi := &kubevirtv1.VirtualMachineInstance{}
 	key := types.NamespacedName{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}
 	if err := r.Get(ctx, key, vmi); err != nil {
@@ -382,6 +420,29 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 		return result, err
 	}
 	return ctrl.Result{RequeueAfter: crcReadyRequeueInterval}, nil
+}
+
+// crcBootKeyError marks dependency failures that can recover when the
+// bundle source or a conflicting local Secret is corrected.
+type crcBootKeyError struct{ error }
+
+func isCRCBootKeyError(err error) bool {
+	var keyErr crcBootKeyError
+	return errors.As(err, &keyErr)
+}
+
+func (r *ClusterInstanceReconciler) markCRCBootKeyUnavailable(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, cause error) (ctrl.Result, error) {
+	previous := instance.Status.DeepCopy()
+	instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+	instance.Status.KubeconfigSecretRef = corev1.LocalObjectReference{}
+	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type: conditionTypeReady, Status: metav1.ConditionFalse,
+		Reason: "BootKeyUnavailable", Message: cause.Error(), ObservedGeneration: instance.Generation,
+	})
+	if err := r.updateStatusIfChanged(ctx, instance, previous, "updating CRC boot key condition"); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
 // reconcileProvisioningCRCVMI records the VMI identity before the crc-agent
@@ -681,10 +742,29 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	if err := r.List(ctx, jobs, client.InNamespace(instance.Namespace), client.MatchingLabels(resources.CommonLabels(instance))); err != nil {
 		return false, fmt.Errorf("listing crc-agent Jobs: %w", err)
 	}
-	background := metav1.DeletePropagationBackground
+	// Foreground deletion waits for Job pods to stop using the boot key.
+	foreground := metav1.DeletePropagationForeground
 	for i := range jobs.Items {
-		if err := deleteObject(&jobs.Items[i], "crc-agent Job", client.PropagationPolicy(background)); err != nil {
+		if err := deleteObject(&jobs.Items[i], "crc-agent Job", client.PropagationPolicy(foreground)); err != nil {
 			return false, err
+		}
+	}
+	// Do not remove the boot key while a Job pod can still be running.
+	if len(jobs.Items) > 0 {
+		return true, nil
+	}
+	if crcBootKeyBinding(instance) != nil {
+		copyKey := types.NamespacedName{Name: resources.CRCBootKeySecretName(instance.Name), Namespace: instance.Namespace}
+		copy := &corev1.Secret{}
+		if err := r.Get(ctx, copyKey, copy); err == nil {
+			// An unrelated Secret with the same name is not ours to remove.
+			if metav1.IsControlledBy(copy, instance) {
+				if err := deleteObject(copy, "CRC boot key secret"); err != nil {
+					return false, err
+				}
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("getting CRC boot key secret %s: %w", copyKey, err)
 		}
 	}
 

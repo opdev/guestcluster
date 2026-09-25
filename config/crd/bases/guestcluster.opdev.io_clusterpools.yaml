@@ -95,10 +95,10 @@ spec:
                 properties:
                   bundleSSHKeyRef:
                     description: |-
-                      BundleSSHKeyRef references a Secret (in the operator's namespace) containing the
+                      BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the
                       CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official
                       .crcbundle, used to reach the booted VM as user "core"), under a data key named
-                      "id_ecdsa" or "ssh-privatekey". This field is a FALLBACK. When CRCVersion is set,
+                      "id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,
                       the operator derives the SSH key automatically from the referenced CRCBundle
                       instead, and this field is ignored. When CRCVersion is unset, this field is
                       required for topology=crc: the crc-agent Job uses this key to SSH into the

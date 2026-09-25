@@ -100,8 +100,9 @@ func CRCAgentPullSecretPath() string {
 // within that Secret that holds it. The caller resolves both,
 // either from the template's BundleSSHKeyRef (manual/fallback path, with
 // the data key resolved against BundleSSHKeyDataKeys by the caller's
-// precheck), or from a Ready CRCBundle's Status.SSHKeySecretRef (turnkey
-// path, which always uses data key "id_ecdsa" per the bundle-prep script).
+// precheck), or from an instance-owned copy of the Ready CRCBundle's
+// Status.SSHKeySecretRef (turnkey path, which always uses data key
+// "id_ecdsa" per the bundle-prep script).
 // image is the crc-agent container image to run (see CRCAgentImageEnvVar).
 // apiHostname is the externally routable hostname for which the
 // ClusterInstance controller already provisioned a passthrough Route (see

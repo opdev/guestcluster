@@ -80,6 +80,25 @@ type CRCBackingStatus struct {
 	// VMIUID identifies the VirtualMachineInstance for which the crc-agent
 	// completed its post-boot handoff.
 	VMIUID string `json:"vmiUID,omitempty"`
+	// BootKey records the golden disk and private key used for this instance.
+	// It is set before the DataVolume is created and stays fixed for its lifetime.
+	// +optional
+	BootKey *CRCBootKeyStatus `json:"bootKey,omitempty"`
+}
+
+// CRCBootKeyStatus binds a CRCBundle disk to its boot SSH key without storing
+// private key material in the ClusterInstance status.
+type CRCBootKeyStatus struct {
+	BundleUID        string `json:"bundleUID"`
+	BundleSHA256     string `json:"bundleSHA256"`
+	PVCNamespace     string `json:"pvcNamespace"`
+	PVCName          string `json:"pvcName"`
+	PVCUID           string `json:"pvcUID"`
+	StorageClassName string `json:"storageClassName,omitempty"`
+	SecretNamespace  string `json:"secretNamespace"`
+	SecretName       string `json:"secretName"`
+	SecretUID        string `json:"secretUID"`
+	KeySHA256        string `json:"keySHA256"`
 }
 
 // HyperShiftBackingStatus tracks the HostedCluster/NodePool backing a topology=hcp

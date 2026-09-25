@@ -313,14 +313,19 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 
 	res, err := r.ensureCRCBacking(ctx, instance, bundleKeyDataKey, pullSecretName)
 	if err != nil {
+		if isCRCBootKeyError(err) {
+			return r.markCRCBootKeyUnavailable(ctx, instance, err)
+		}
 		return r.markFailed(ctx, instance, err)
 	}
 
+	bootKey := crcBootKeyBinding(instance)
 	instance.Status.CRC = &brokerv1alpha1.CRCBackingStatus{
 		VMName:         res.vmName,
 		DataVolumeName: res.dvName,
 		SSHEndpoint:    res.sshEndpoint,
 		VMIUID:         res.vmiUID,
+		BootKey:        bootKey,
 	}
 
 	if !res.ready {

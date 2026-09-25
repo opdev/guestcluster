@@ -114,7 +114,8 @@ Two controllers implement this:
     to that volume. Once the VM's `VirtualMachineInstance` reports an IP,
     the controller creates a run-to-completion **crc-agent Job**
     (`<instance>-crc-agent-<vmi-hash>`). This Job connects to the VM over SSH as user
-    `core`, using `template.bundleSSHKeyRef`. It runs every post-boot
+    `core`, using the namespace-local manual key or an instance-owned
+    copy of the CRCBundle key. It runs every post-boot
     fixup natively, with no external orchestration binary (see
     [crc-agent](#crc-agent-cmdcrc-agent) below). The controller waits for
     the Job to publish the raw kubeconfig Secret
@@ -209,7 +210,8 @@ a plain delete-and-recreate is simpler than a dedicated
 teardown-and-recreate-in-place step:
 
 - **CRC**: The operator deletes the crc-agent `Job`, the KubeVirt
-  `VirtualMachine`, the CDI `DataVolume`, the raw crc-agent kubeconfig
+  `VirtualMachine`, the CDI `DataVolume`, the instance-owned boot-key
+  copy, the raw crc-agent kubeconfig
   Secret, and the API `Service` and `Route`. It also destroys the VM's
   disk (`DataVolume`). So no operator or CSV installed by the previous
   test run can survive. The replacement instance's VM boots a pristine
@@ -280,8 +282,13 @@ golden PVC, per instance, using CDI's `DataVolumeSourcePVC`. This clone is
 native and cross-namespace. CDI uses a CSI clone or snapshot when available,
 or a host-assisted clone when needed. It needs no re-download and no shared
 mutable disk. The instance uses this clone instead of an HTTP `DataVolume`
-import. It also resolves its crc-agent SSH key directly from the
-`CRCBundle`'s Secret, not from `template.bundleSSHKeyRef`.
+import. Before cloning, it records the golden PVC and SSH key identities
+on the instance. It copies the `CRCBundle` key into an instance-owned
+Secret in the instance namespace. The agent mounts that local copy, not
+the shared source Secret. If the copy is deleted, recovery checks the
+recorded PVC and key identities before it restores the copy. A changed
+source cannot replace the key for an existing VM. The source stays in
+the operator namespace and is shared across instances.
 
 CDI checks clone access in the **source PVC's namespace**. Direct-manifest
 and OLM installs give the manager ServiceAccount `create` on
@@ -327,10 +334,11 @@ tar --zstd -xf crc.crcbundle
 Then, once per `ClusterPool` (not once per lease):
 
 - Set `template.releaseImage` to the URL of that extracted `crc.qcow2`.
-- Create a `Secret` from the bundle's `id_ecdsa_crc` and reference it via
+- Create a `Secret` in the **instance namespace** from the bundle's
+  `id_ecdsa_crc` and reference it via
   `template.bundleSSHKeyRef`:
   ```sh
-  kubectl create secret generic crc-bundle-ssh-key --from-file=id_ecdsa=./id_ecdsa_crc
+  kubectl -n <instance-namespace> create secret generic crc-bundle-ssh-key --from-file=id_ecdsa=./id_ecdsa_crc
   ```
 - `template.pullSecretRef` stays optional, on both paths. See
   [Pull secret](#pull-secret) below.
@@ -341,36 +349,36 @@ ignores `releaseImage` and `bundleSSHKeyRef` in that case.
 #### Pull secret
 
 `template.pullSecretRef` is **optional**. If you leave it unset, the
-operator uses a Secret named `pull-secret` in the same namespace as the
-`ClusterPool` or `ClusterInstance`. An administrator or pool creator must
-create this Secret, for example by copying the management cluster's
-`openshift-config/pull-secret` into the pool namespace. This same-namespace
-default is used by direct manifest and OLM installations without any
+operator uses a Secret named `pull-secret` in the `ClusterInstance` namespace
+(also the pool namespace for pool-owned instances). An administrator or pool
+creator must create this Secret, for example by copying the management
+cluster's `openshift-config/pull-secret` into the instance namespace.
+This same-namespace default is used by direct manifest and OLM installations without any
 deployment-specific RBAC.
 
 Set `template.pullSecretRef` explicitly to override this default. For
 example, a disconnected or mirrored registry may need a narrower or
 different credential:
 ```sh
-kubectl create secret generic crc-pull-secret --from-file=.dockerconfigjson=./pull-secret.json --type=kubernetes.io/dockerconfigjson
+kubectl -n <instance-namespace> create secret generic crc-pull-secret --from-file=.dockerconfigjson=./pull-secret.json --type=kubernetes.io/dockerconfigjson
 ```
 then reference it via `template.pullSecretRef.name: crc-pull-secret`. The
-Secret must be in the same namespace as the `ClusterPool` or `ClusterInstance`.
+Secret must be in the same namespace as the `ClusterInstance`. It is a
+user-provided input, separate from the operator-managed CRC boot-key copy.
 For `hcp`, the operator copies it to the HostedCluster namespace under a
 per-instance name before HyperShift uses it.
 
 #### Common to both paths
 
-The affected `ClusterInstance` fails fast in two cases. First, if the
-pull secret is missing or malformed: neither an explicit `pullSecretRef`
-nor the namespace's default `pull-secret` is usable. Second, if the bundle
-SSH key is missing or malformed, on the manual path only (the turnkey
-path derives its key from the `CRCBundle` and never checks
-`bundleSSHKeyRef`). In both cases, the operator sets `status.phase:
-Failed` and a `Ready=False` condition. The `reason` field reads
-`InvalidPullSecret` or `MissingBundleSSHKey`. This failure happens before
-the operator creates any VM or Job. You get a clear failure, not a late,
-opaque SSH error.
+The affected `ClusterInstance` fails fast if the pull secret is missing or
+malformed, or if the manual bundle SSH key is missing or malformed. The
+operator sets `status.phase: Failed` and `Ready=False` with reason
+`InvalidPullSecret` or `MissingBundleSSHKey` before it creates a VM or Job.
+On the turnkey path, an invalid bundle disk or key reference, a missing
+source, or a changed source after copy deletion sets `Ready=False` with
+reason `BootKeyUnavailable`. The instance stays in `Provisioning` and
+retries after the source is repaired. It does not start a Job with an
+unverified key.
 
 #### Cross-namespace clone integration test
 

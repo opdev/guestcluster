@@ -109,7 +109,12 @@ func getFirstFoundEnvTestBinaryDir() string {
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
-			return filepath.Join(basePath, entry.Name())
+			path, err := filepath.Abs(filepath.Join(basePath, entry.Name()))
+			if err != nil {
+				logf.Log.Error(err, "Failed to resolve envtest directory", "path", basePath)
+				return ""
+			}
+			return path
 		}
 	}
 	return ""
