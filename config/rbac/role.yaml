@@ -9,10 +9,17 @@ rules:
   resources:
   - configmaps
   - nodes
+  - serviceaccounts
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - list
 - apiGroups:
   - ""
   resources:
@@ -171,6 +178,12 @@ rules:
   - multiclusterengines
   verbs:
   - get
+  - list
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
   - list
 - apiGroups:
   - route.openshift.io
