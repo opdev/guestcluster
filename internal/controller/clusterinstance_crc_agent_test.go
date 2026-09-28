@@ -45,11 +45,14 @@ const (
 	crcTestAgentServiceAccount = "agent-account"
 	crcTestAgentPodName        = "agent-pod"
 	crcTestJobNameLabel        = "job-name"
+	crcTestInstanceKind        = "ClusterInstance"
 )
 
 func agentDiagnosticFixture() (*brokerv1alpha1.ClusterInstance, *batchv1.Job, []client.Object) {
 	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "tenant", UID: crcTestInstanceUID}}
 	job := resources.BuildCRCAgentJob(instance, "192.0.2.1", "vmi-uid", "ssh", crcTestBundleSSHKeyDataKey, "identity", "agent-image", "api.test", "pull")
+	controller := true
+	job.OwnerReferences = []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: &controller}}
 	job.Spec.Template.Spec.ServiceAccountName = crcTestAgentServiceAccount
 	objects := []client.Object{
 		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: crcTestAgentServiceAccount, Namespace: instance.Namespace}},
@@ -118,7 +121,7 @@ func TestInspectCRCAgentPrerequisiteCanRecover(t *testing.T) {
 	check("AgentPodPending")
 	// Instance-owned accounts require their own binding. A legacy account
 	// without an instance owner does not require that binding.
-	sa.OwnerReferences = []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: "ClusterInstance", Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}}
+	sa.OwnerReferences = []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}}
 	if err := c.Update(ctx, sa); err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +210,10 @@ func TestReconcileCRCAgentPrerequisiteClearsBlockedStatus(t *testing.T) {
 		t.Fatalf("expected %s while provisioning, got %+v", want, got.Status)
 	}
 	assertReason("AgentPrerequisiteMissing")
+	retained := &batchv1.Job{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(job), retained); err != nil || retained.Spec.Template.Spec.ServiceAccountName != crcTestAgentServiceAccount {
+		t.Fatalf("legacy Job account changed: %v %+v", err, retained.Spec.Template.Spec)
+	}
 	if err := c.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: crcTestAgentServiceAccount, Namespace: instance.Namespace}}); err != nil {
 		t.Fatal(err)
 	}

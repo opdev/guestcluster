@@ -16,6 +16,9 @@ resources:
 - crc_agent_service_account.yaml
 - crc_agent_role.yaml
 - crc_agent_role_binding.yaml
+# Keep the shared account, Role and binding for active Jobs from earlier releases.
+# New Jobs use instance-owned accounts with namespaced bindings to this role.
+- crc_agent_instance_role.yaml
 # bundle-prep is the ServiceAccount used by the one-time-per-version CRCBundle
 # bundle-prep Job (see internal/resources.BuildBundlePrepJob); it needs
 # namespace-scoped secrets+configmaps access to publish the extracted SSH key

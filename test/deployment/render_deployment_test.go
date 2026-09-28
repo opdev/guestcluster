@@ -37,6 +37,7 @@ const (
 	managerImage     = "registry.example.test/guestcluster-operator:test"
 	crcAgentImage    = "registry.example.test/guestcluster-operator-crc-agent:test"
 	undeployTarget   = "undeploy"
+	createVerb       = "create"
 )
 
 func TestBuildInstallerRendersDeploymentAndPreservesSources(t *testing.T) {
@@ -102,7 +103,7 @@ func TestCDICloneSourcePermissionIsLimitedToOperatorNamespace(t *testing.T) {
 	}
 	rule, ok := rules[0].(map[string]interface{})
 	if !ok || !containsString(rule["apiGroups"], "cdi.kubevirt.io") ||
-		!containsString(rule["resources"], "datavolumes/source") || !containsString(rule["verbs"], "create") {
+		!containsString(rule["resources"], "datavolumes/source") || !containsString(rule["verbs"], createVerb) {
 		t.Fatalf("CDI clone source Role rule = %#v, want create on cdi.kubevirt.io/datavolumes/source", rules[0])
 	}
 
@@ -136,6 +137,91 @@ func TestCDICloneSourcePermissionIsLimitedToOperatorNamespace(t *testing.T) {
 		clusterRule, ok := item.(map[string]interface{})
 		if ok && containsString(clusterRule["resources"], "datavolumes/source") {
 			t.Fatal("manager ClusterRole grants cluster-wide datavolumes/source access")
+		}
+	}
+}
+
+func TestCRCAgentClusterRoleNameReachesManager(t *testing.T) {
+	repoRoot := repositoryRoot(t)
+	output := filepath.Join(t.TempDir(), "install.yaml")
+	runRenderer(t, repoRoot, nil, "build-installer", kustomizePath(t, repoRoot), managerImage, crcAgentImage, output)
+	objects := readManifests(t, output)
+	role := resource(t, objects, "ClusterRole", "guestcluster-operator-crc-agent-instance-role")
+	if role.GetNamespace() != "" {
+		t.Fatalf("agent ClusterRole must be cluster-scoped: %s", role.GetNamespace())
+	}
+	deployment := resource(t, objects, "Deployment", "guestcluster-operator-controller-manager")
+	containers, _, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, err := unstructured.NestedSlice(containers[0].(map[string]interface{}), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, value := range env {
+		entry := value.(map[string]interface{})
+		if entry["name"] == "CRC_AGENT_CLUSTER_ROLE" && entry["value"] == role.GetName() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("manager does not use installed agent ClusterRole %q: %v", role.GetName(), env)
+	}
+}
+
+func TestOLMAgentRoleNameAndManagerPermissions(t *testing.T) {
+	root := repositoryRoot(t)
+	csvPath := filepath.Join(root, "bundle", "manifests", "guestcluster-operator.clusterserviceversion.yaml")
+	rolePath := filepath.Join(root, "bundle", "manifests",
+		"guestcluster-operator-crc-agent-instance-role_rbac.authorization.k8s.io_v1_clusterrole.yaml")
+	csv := resource(t, readManifests(t, csvPath), "ClusterServiceVersion", "guestcluster-operator.v0.0.1")
+	role := resource(t, readManifests(t, rolePath), "ClusterRole", "guestcluster-operator-crc-agent-instance-role")
+	deployments, _, err := unstructured.NestedSlice(csv.Object, "spec", "install", "spec", "deployments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers, _, err := unstructured.NestedSlice(deployments[0].(map[string]interface{}),
+		"spec", "template", "spec", "containers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, err := unstructured.NestedSlice(containers[0].(map[string]interface{}), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, value := range env {
+		entry := value.(map[string]interface{})
+		if entry["name"] == "CRC_AGENT_CLUSTER_ROLE" && entry["value"] == role.GetName() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OLM deployment does not use agent role %s", role.GetName())
+	}
+	grants, _, err := unstructured.NestedSlice(csv.Object, "spec", "install", "spec", "clusterPermissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := grants[0].(map[string]interface{})["rules"].([]interface{})
+	for _, required := range []struct{ resource, verb string }{
+		{"clusterroles", createVerb},
+		{"rolebindings", createVerb},
+		{"rolebindings", "update"},
+		{"serviceaccounts", createVerb},
+		{"serviceaccounts", "delete"},
+	} {
+		granted := false
+		for _, raw := range rules {
+			rule := raw.(map[string]interface{})
+			if containsString(rule["resources"], required.resource) && containsString(rule["verbs"], required.verb) {
+				granted = true
+			}
+		}
+		if !granted {
+			t.Errorf("OLM manager lacks %s on %s", required.verb, required.resource)
 		}
 	}
 }

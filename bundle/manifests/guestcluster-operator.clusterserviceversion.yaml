@@ -1,0 +1,530 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "guestcluster.opdev.io/v1alpha1",
+          "kind": "CRCBundle",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "guestcluster-operator"
+            },
+            "name": "crc-4.16.0-amd64"
+          },
+          "spec": {
+            "arch": "amd64",
+            "version": "4.16.0"
+          }
+        },
+        {
+          "apiVersion": "guestcluster.opdev.io/v1alpha1",
+          "kind": "ClusterInstance",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "guestcluster-operator"
+            },
+            "name": "crc-standalone-sample"
+          },
+          "spec": {
+            "poolRef": {
+              "name": "crc-pool"
+            },
+            "template": {
+              "cores": 4,
+              "crcVersion": "4.16.0",
+              "memory": "16Gi",
+              "ocpVersion": "4.16.0",
+              "rootVolumeSize": "80Gi"
+            },
+            "type": "crc"
+          }
+        },
+        {
+          "apiVersion": "guestcluster.opdev.io/v1alpha1",
+          "kind": "ClusterLease",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "guestcluster-operator"
+            },
+            "name": "ci-job-1234-lease"
+          },
+          "spec": {
+            "poolRef": {
+              "name": "crc-pool"
+            },
+            "requestedBy": "ci-job-1234",
+            "ttl": "2h"
+          }
+        },
+        {
+          "apiVersion": "guestcluster.opdev.io/v1alpha1",
+          "kind": "ClusterPool",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "guestcluster-operator"
+            },
+            "name": "crc-pool"
+          },
+          "spec": {
+            "maxSize": 4,
+            "minSize": 0,
+            "template": {
+              "cores": 4,
+              "crcVersion": "4.22.14",
+              "memory": "16Gi",
+              "ocpVersion": "4.22.14",
+              "rootVolumeSize": "80Gi",
+              "storageClassName": ""
+            },
+            "type": "crc",
+            "warmSpares": 1
+          }
+        },
+        {
+          "apiVersion": "guestcluster.opdev.io/v1alpha1",
+          "kind": "ClusterPool",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "guestcluster-operator"
+            },
+            "name": "hcp-pool"
+          },
+          "spec": {
+            "maxSize": 3,
+            "template": {
+              "controllerAvailabilityPolicy": "SingleReplica",
+              "cores": 2,
+              "memory": "8Gi",
+              "nodePoolReplicas": 1,
+              "ocpVersion": "4.16.10",
+              "releaseImage": "quay.io/openshift-release-dev/ocp-release:4.16.10-multi",
+              "rootVolumeSize": "32Gi"
+            },
+            "type": "hcp",
+            "warmSpares": 1
+          }
+        }
+      ]
+    capabilities: Basic Install
+    createdAt: "2026-09-25T15:32:17Z"
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+  name: guestcluster-operator.v0.0.1
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: |-
+        ClusterInstance is the Schema for the clusterinstances API. It represents a single
+        concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
+        this operator.
+      displayName: Cluster Instance
+      kind: ClusterInstance
+      name: clusterinstances.guestcluster.opdev.io
+      version: v1alpha1
+    - description: |-
+        ClusterLease is the Schema for the clusterleases API. CI creates a ClusterLease to
+        acquire an available guest cluster of a given topology from a ClusterPool. Deleting
+        the ClusterLease releases the instance back to the pool for recycling.
+      displayName: Cluster Lease
+      kind: ClusterLease
+      name: clusterleases.guestcluster.opdev.io
+      version: v1alpha1
+    - description: |-
+        ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
+        guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
+        ClusterLease objects.
+      displayName: Cluster Pool
+      kind: ClusterPool
+      name: clusterpools.guestcluster.opdev.io
+      version: v1alpha1
+    - kind: CRCBundle
+      name: crcbundles.guestcluster.opdev.io
+      version: v1alpha1
+  description: Guestcluster Operator description. TODO.
+  displayName: Guestcluster Operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          - nodes
+          - serviceaccounts
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - serviceaccounts
+          verbs:
+          - create
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - list
+        - apiGroups:
+          - ""
+          resources:
+          - namespaces
+          verbs:
+          - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - persistentvolumeclaims
+          - secrets
+          - services
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - apiextensions.k8s.io
+          resources:
+          - customresourcedefinitions
+          verbs:
+          - get
+        - apiGroups:
+          - apps
+          resources:
+          - deployments
+          verbs:
+          - get
+        - apiGroups:
+          - batch
+          resources:
+          - jobs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - cdi.kubevirt.io
+          resources:
+          - datavolumes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - config.openshift.io
+          resources:
+          - ingresses
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - guestcluster.opdev.io
+          resources:
+          - clusterinstances
+          - clusterleases
+          - clusterpools
+          - crcbundles
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - guestcluster.opdev.io
+          resources:
+          - clusterinstances/finalizers
+          - clusterleases/finalizers
+          - clusterpools/finalizers
+          - crcbundles/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - guestcluster.opdev.io
+          resources:
+          - clusterinstances/status
+          - clusterleases/status
+          - clusterpools/status
+          - crcbundles/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - hco.kubevirt.io
+          resources:
+          - hyperconvergeds
+          verbs:
+          - get
+          - list
+        - apiGroups:
+          - hypershift.openshift.io
+          resources:
+          - hostedclusters
+          - nodepools
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachineinstances
+          verbs:
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachines
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - multicluster.openshift.io
+          resources:
+          - multiclusterengines
+          verbs:
+          - get
+          - list
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterroles
+          verbs:
+          - create
+          - get
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - rolebindings
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - update
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes/custom-host
+          verbs:
+          - create
+          - update
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: guestcluster-operator-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: guestcluster-operator
+          control-plane: controller-manager
+        name: guestcluster-operator-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: guestcluster-operator
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: guestcluster-operator
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --metrics-bind-address=:8443
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /manager
+                env:
+                - name: CRC_AGENT_IMAGE
+                  value: opdev.io/guestcluster-operator-crc-agent:latest
+                - name: OPERATOR_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: BUNDLE_PREP_SERVICE_ACCOUNT
+                  value: guestcluster-operator-bundle-prep
+                - name: CRC_AGENT_SERVICE_ACCOUNT
+                  value: guestcluster-operator-crc-agent
+                - name: CRC_AGENT_CLUSTER_ROLE
+                  value: guestcluster-operator-crc-agent-instance-role
+                image: controller:latest
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: guestcluster-operator-controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        - apiGroups:
+          - cdi.kubevirt.io
+          resources:
+          - datavolumes/source
+          verbs:
+          - create
+        serviceAccountName: guestcluster-operator-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - guestcluster-operator
+  links:
+  - name: Guestcluster Operator
+    url: https://guestcluster-operator.domain
+  maintainers:
+  - email: your@email.com
+    name: Maintainer Name
+  maturity: alpha
+  provider:
+    name: Provider Name
+    url: https://your.domain
+  relatedImages:
+  - image: opdev.io/guestcluster-operator-crc-agent:latest
+    name: crc-agent
+  version: 0.0.1

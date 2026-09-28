@@ -80,10 +80,12 @@ spec:
           # edit them by hand.
           - name: BUNDLE_PREP_SERVICE_ACCOUNT
             value: bundle-prep
-          # Same mechanism, for the crc-agent Job's ServiceAccount. See
-          # internal/resources.CRCAgentServiceAccountEnvVar.
+          # Legacy shared account: keep it for Jobs created before this release.
           - name: CRC_AGENT_SERVICE_ACCOUNT
             value: crc-agent
+          # Kustomize replaces this with the installed ClusterRole name.
+          - name: CRC_AGENT_CLUSTER_ROLE
+            value: crc-agent-instance-role
           # Required for production. Set this to the pushed crc-agent image.
           # It is used by the per-instance crc-agent Job (topology=crc) and
           # the CRCBundle bundle-prep Job. Use an overlay or Kustomize image

@@ -233,6 +233,9 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string) (crcResult, error) {
 	log := logf.FromContext(ctx)
 	vmIP := res.sshEndpoint
+	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
+		return res, err
+	}
 	// Ensure the Service and passthrough Route that expose the guest API
 	// server externally exist; this call is idempotent. The VMI's own
 	// pod-network IP is not routable outside the management cluster. The
@@ -265,6 +268,11 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, i
 		log.Info("created crc-agent Job", "job", job.Name, "vmIP", vmIP)
 	} else if err != nil {
 		return res, fmt.Errorf("getting crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
+	}
+	// A Job's Pod template is immutable. Leave Jobs from the shared-account
+	// deployment on that account; the legacy Role and binding remain installed.
+	if existingJob.Name != "" && !metav1.IsControlledBy(existingJob, instance) {
+		return res, fmt.Errorf("crc-agent Job %s/%s is not controlled by this ClusterInstance", job.Namespace, job.Name)
 	}
 
 	// Once the crc-agent Job completes successfully, it publishes the raw
@@ -362,6 +370,10 @@ func (r *ClusterInstanceReconciler) ensureCRCIdentity(ctx context.Context, insta
 // reconcileReadyCRC verifies that the published kubeconfig still belongs to
 // the running VMI and can reach the guest API before preserving Ready.
 func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	// Keep the permissions available for recovery even when no new Job is needed.
+	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconciling CRC agent permissions: %w", err)
+	}
 	if instance.Spec.Template.CRCVersion != "" {
 		binding := crcBootKeyBinding(instance)
 		if binding == nil {
@@ -757,9 +769,11 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	}
 
 	// Delete all crc-agent Jobs before the VM. VMI-scoped Job names mean more
-	// than one completed Job can exist after VMI replacement.
+	// than one completed Job can exist after VMI replacement. Read directly
+	// from the API: a stale empty cache list cannot prove that no Job is
+	// still using the instance account and boot key.
 	jobs := &batchv1.JobList{}
-	if err := r.List(ctx, jobs, client.InNamespace(instance.Namespace), client.MatchingLabels(resources.CommonLabels(instance))); err != nil {
+	if err := r.platformReader().List(ctx, jobs, client.InNamespace(instance.Namespace), client.MatchingLabels(resources.CommonLabels(instance))); err != nil {
 		return false, fmt.Errorf("listing crc-agent Jobs: %w", err)
 	}
 	// Foreground deletion waits for Job pods to stop using the boot key.
@@ -773,6 +787,11 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	if len(jobs.Items) > 0 {
 		return true, nil
 	}
+	rbacPending, err := r.deleteCRCAgentRBAC(ctx, instance)
+	if err != nil {
+		return false, err
+	}
+	pending = pending || rbacPending
 	if crcBootKeyBinding(instance) != nil {
 		copyKey := types.NamespacedName{Name: resources.CRCBootKeySecretName(instance.Name), Namespace: instance.Namespace}
 		copy := &corev1.Secret{}
