@@ -159,6 +159,7 @@ func TestReconcileReadyHCPProjectsLeaseWhenDependenciesFail(t *testing.T) {
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 		Status:     brokerv1alpha1.ClusterInstanceStatus{Phase: brokerv1alpha1.PhaseReady},
 	}
+	setLegacyHCPTestPlacement(instance)
 	lease := &brokerv1alpha1.ClusterLease{
 		ObjectMeta: metav1.ObjectMeta{Name: "lease", Namespace: testNamespace},
 		Status:     brokerv1alpha1.ClusterLeaseStatus{InstanceRef: &corev1.LocalObjectReference{Name: instance.Name}},

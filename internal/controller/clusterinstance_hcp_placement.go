@@ -65,9 +65,13 @@ func (r *ClusterInstanceReconciler) recordHCPPlacement(ctx context.Context, inst
 	if err := r.checkHCPPlacement(ctx, instance, namespace, name); err != nil {
 		return false, err
 	}
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterNamespace: namespace, HostedClusterName: name,
-		NodePoolNames: []string{hcpNodePoolName(instance)},
+	if instance.Status.HyperShift == nil {
+		instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{}
+	}
+	instance.Status.HyperShift.HostedClusterNamespace = namespace
+	instance.Status.HyperShift.HostedClusterName = name
+	if len(instance.Status.HyperShift.NodePoolNames) == 0 {
+		instance.Status.HyperShift.NodePoolNames = []string{resources.NodePoolName(instance.Name)}
 	}
 	if err := r.Status().Update(ctx, instance); err != nil {
 		return false, fmt.Errorf("recording HCP placement: %w", err)
@@ -130,10 +134,10 @@ func (r *ClusterInstanceReconciler) recoverHCPNamespace(ctx context.Context, ins
 func (r *ClusterInstanceReconciler) checkHCPPlacement(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, namespace, name string) error {
 	controlPlaneNamespace := resources.HostedControlPlaneNamespace(namespace, name)
 	if problems := validation.IsDNS1123Label(controlPlaneNamespace); len(problems) != 0 {
-		return fmt.Errorf("unsupported HCP namespace %q: %v", controlPlaneNamespace, problems)
+		return apiEndpointConflict("unsupported HCP namespace %q: %v", controlPlaneNamespace, problems)
 	}
 	if problems := validation.IsDNS1123Label(hcpNodePoolName(instance)); len(problems) != 0 {
-		return fmt.Errorf("unsupported HCP NodePool name: %v", problems)
+		return apiEndpointConflict("unsupported HCP NodePool name: %v", problems)
 	}
 	// HyperShift concatenates names and replaces dots. Reject collisions before
 	// it can create workloads in another HostedCluster's control-plane namespace.
@@ -141,12 +145,43 @@ func (r *ClusterInstanceReconciler) checkHCPPlacement(ctx context.Context, insta
 	if err := r.platformReader().List(ctx, clusters); err != nil {
 		return err
 	}
+	ownedClusterExists := false
 	for _, hc := range clusters.Items {
 		if hc.Namespace == namespace && hc.Name == name {
+			if err := r.verifyHCPResource(ctx, instance, &hc); err != nil {
+				return err
+			}
+			ownedClusterExists = true
 			continue
 		}
 		if resources.HostedControlPlaneNamespace(hc.Namespace, hc.Name) == controlPlaneNamespace {
 			return apiEndpointConflict("control-plane namespace %q is used by HostedCluster %s/%s", controlPlaneNamespace, hc.Namespace, hc.Name)
+		}
+	}
+	if !ownedClusterExists {
+		existing := &corev1.Namespace{}
+		if err := r.platformReader().Get(ctx, client.ObjectKey{Name: controlPlaneNamespace}, existing); err == nil {
+			// An old HostedCluster can be gone while its namespace and a
+			// managed Secret remain. That Secret can identify the old source
+			// for finalizer cleanup; an unclaimed namespace alone cannot.
+			verifiedLegacy := false
+			if namespace == resources.DefaultHostedClusterNamespace {
+				cert := &corev1.Secret{}
+				key := client.ObjectKey{Namespace: namespace, Name: resources.KASServingCertName(instance.Name)}
+				if err := r.platformReader().Get(ctx, key, cert); err == nil {
+					if err := r.verifyHCPResource(ctx, instance, cert); err != nil {
+						return err
+					}
+					verifiedLegacy = true
+				} else if !apierrors.IsNotFound(err) {
+					return err
+				}
+			}
+			if !verifiedLegacy {
+				return apiEndpointConflict("control-plane namespace %q exists without a verified HostedCluster", controlPlaneNamespace)
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return err
 		}
 	}
 	instances := &brokerv1alpha1.ClusterInstanceList{}
@@ -194,9 +229,23 @@ func (r *ClusterInstanceReconciler) verifyHCPResource(ctx context.Context, insta
 			continue
 		}
 		if obj.GetNamespace() == instance.Namespace && owner.Name == instance.Name && owner.UID == instance.UID {
+			if np, ok := obj.(*hyperv1beta1.NodePool); ok {
+				_, name := hcpLocation(instance)
+				controller := metav1.GetControllerOf(np)
+				if np.Spec.ClusterName != name || controller == nil || controller.Kind != "HostedCluster" || controller.Name != name {
+					return apiEndpointConflict("NodePool %s/%s does not belong to HostedCluster %s", np.Namespace, np.Name, name)
+				}
+			}
 			return nil
 		}
 		return apiEndpointConflict("resource %s/%s belongs to another ClusterInstance", obj.GetNamespace(), obj.GetName())
+	}
+	// A local label alone cannot prove ownership. The one exception is a
+	// pre-placement legacy object: its source namespace can itself be "clusters",
+	// and those objects did not carry a source-namespace label.
+	if obj.GetNamespace() == instance.Namespace &&
+		(obj.GetNamespace() != resources.DefaultHostedClusterNamespace || obj.GetLabels()[resources.LabelInstanceNamespace] != "") {
+		return apiEndpointConflict("resource %s/%s has no ClusterInstance owner reference", obj.GetNamespace(), obj.GetName())
 	}
 	labels := obj.GetLabels()
 	if labels[resources.LabelManagedBy] != resources.ManagerName || labels[resources.LabelInstance] != instance.Name {

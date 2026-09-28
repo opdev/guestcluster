@@ -63,26 +63,35 @@ func (r *ClusterInstanceReconciler) deleteIfExists(ctx context.Context, obj clie
 	return false, nil
 }
 
-// upsertSecret gets or creates desired. If changed(existing) reports drift,
-// upsertSecret updates the existing Secret's Data, Type, and Labels to
-// match desired.
+// upsertSecret gets or creates desired. Optional checks run before an existing
+// Secret is reused or updated. If changed reports drift, the Secret is updated.
 //
 // Several near-identical "materialize a Secret and keep it in sync" call
 // sites use upsertSecret: the pull-secret copy, the HCP worker SSH key
-// copy, the KAS serving certificate, and the canonical kubeconfig secret.
+// copy, and the canonical kubeconfig secret.
 // These call sites previously each open-coded the same
 // Get/Create/Update-on-drift skeleton.
-func (r *ClusterInstanceReconciler) upsertSecret(ctx context.Context, desired *corev1.Secret, changed func(existing *corev1.Secret) bool) error {
+func (r *ClusterInstanceReconciler) upsertSecret(ctx context.Context, desired *corev1.Secret, changed func(existing *corev1.Secret) bool, verify ...func(*corev1.Secret) error) error {
 	existing := &corev1.Secret{}
 	key := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
 	if err := r.Get(ctx, key, existing); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating secret %s/%s: %w", key.Namespace, key.Name, err)
+		if createErr := r.Create(ctx, desired); createErr == nil {
+			return nil
+		} else if !apierrors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("creating secret %s/%s: %w", key.Namespace, key.Name, createErr)
 		}
-		return nil
+		if err := r.Get(ctx, key, existing); err != nil {
+			return fmt.Errorf("getting concurrently created secret %s/%s: %w", key.Namespace, key.Name, err)
+		}
 	} else if err != nil {
 		return fmt.Errorf("getting secret %s/%s: %w", key.Namespace, key.Name, err)
-	} else if changed(existing) {
+	}
+	for _, check := range verify {
+		if err := check(existing); err != nil {
+			return err
+		}
+	}
+	if changed(existing) {
 		existing.Type = desired.Type
 		existing.Data = desired.Data
 		existing.Labels = desired.Labels

@@ -167,7 +167,9 @@ func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, 
 	changed := func(existing *corev1.Secret) bool {
 		return !bytes.Equal(existing.Data[resources.HCPWorkerSSHKeyDataKey], data)
 	}
-	if err := r.upsertSecret(ctx, desired, changed); err != nil {
+	if err := r.upsertSecret(ctx, desired, changed, func(existing *corev1.Secret) error {
+		return r.verifyHCPResource(ctx, instance, existing)
+	}); err != nil {
 		return "", err
 	}
 
@@ -230,7 +232,7 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 	// hand) that a regen is needed. So this applies the create/update
 	// directly rather than through upsertSecret, which would re-Get first.
 	if apierrors.IsNotFound(getErr) {
-		if err := r.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desired); err != nil {
 			return "", nil, fmt.Errorf("creating KAS serving cert secret %s/%s: %w", targetNamespace, secretName, err)
 		}
 		log.Info("created KAS serving certificate", "secret", secretName, "hostname", hostname)
@@ -364,6 +366,15 @@ func (r *ClusterInstanceReconciler) existingHCPAPIHostname(
 // API endpoint still has its verified Route. It also recovers old Ready
 // instances whose status did not record the endpoint.
 func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
+		var conflict apiEndpointConflictError
+		if errors.As(err, &conflict) {
+			return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+		}
+		return ctrl.Result{}, err
+	} else if recorded {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
 	hostedClusterNamespace, hostedClusterName := hcpLocation(instance)
 	hostedCluster := &hyperv1beta1.HostedCluster{}
 	hostedClusterKey := types.NamespacedName{Name: hostedClusterName, Namespace: hostedClusterNamespace}
@@ -376,14 +387,12 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 		return ctrl.Result{}, fmt.Errorf("getting HostedCluster %s/%s while checking its endpoint: %w", hostedClusterKey.Namespace, hostedClusterKey.Name, err)
 	}
 	if err := r.verifyHCPResource(ctx, instance, hostedCluster); err != nil {
-		return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
-	}
-	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
+		var conflict apiEndpointConflictError
+		if errors.As(err, &conflict) {
+			return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+		}
 		return ctrl.Result{}, err
-	} else if recorded {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
-
 	hcpNamespace := resources.HostedControlPlaneNamespace(hostedClusterNamespace, hostedClusterName)
 	previousStatus := instance.Status.DeepCopy()
 	hostname, persistEndpoint, err := r.resolveHCPAPIHostname(ctx, instance, hostedCluster, true, hcpNamespace)
@@ -544,7 +553,7 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	}
 	existingNP := &hyperv1beta1.NodePool{}
 	if err := r.Get(ctx, types.NamespacedName{Name: np.Name, Namespace: np.Namespace}, existingNP); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, np); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, np); err != nil {
 			return res, fmt.Errorf("creating NodePool %s/%s: %w", np.Namespace, np.Name, err)
 		}
 		log.Info("created NodePool", "nodePool", np.Name, "replicas", replicas)
@@ -673,7 +682,7 @@ func (r *ClusterInstanceReconciler) createHostedCluster(ctx context.Context, ins
 	if err := r.setHCPResourceOwner(instance, hc); err != nil {
 		return err
 	}
-	if err := r.Create(ctx, hc); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := r.Create(ctx, hc); err != nil {
 		return fmt.Errorf("creating HostedCluster %s/%s: %w", hc.Namespace, hc.Name, err)
 	}
 	return nil

@@ -154,8 +154,10 @@ spec:
                   hcpWorkerSSHKeyRef:
                     description: |-
                       HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace
-                      containing an SSH public key, under a data key named "id_rsa.pub", to inject as
-                      an authorized key for the "core" user on every hcp NodePool worker (via
+                      containing an SSH public key under the data key "id_rsa.pub". New HCP
+                      HostedClusters reference this Secret directly; the operator does not own
+                      or delete it. Legacy HostedClusters in "clusters" use a managed copy.
+                      The key is injected for the "core" user on every HCP NodePool worker (via
                       HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
                       generation). This field is only a debugging convenience (e.g. to inspect a
                       worker that is stuck before ever registering as a Node) and has no effect on

@@ -385,12 +385,17 @@ another instance's resources.
 The API Route stays in the HyperShift control-plane namespace, derived from
 the recorded HostedCluster namespace and name. This combined name must fit
 the 63-character namespace limit; the NodePool name must also fit its DNS
-label limit. The operator rejects unsupported names and collisions caused by
-concatenation or dot replacement before new provisioning. API hostnames use
+label limit. The operator rejects unsupported names, existing unclaimed
+control-plane namespaces, and collisions caused by concatenation or dot
+replacement before new provisioning. API hostnames use
 the source namespace and instance name and remain fixed after selection.
 
 HyperShift must watch the source namespaces that contain new HostedClusters.
-Verify its deployment scope when enabling HCP pools outside `clusters`.
+The upstream HyperShift manager uses a cluster-wide cache by default; verify
+the scope of the installed HyperShift deployment before enabling HCP pools
+outside `clusters`. The guestcluster manager needs its cluster-wide
+HostedCluster, NodePool, Secret, Route, and Namespace permissions in both
+direct-install and OLM deployments.
 
 #### Common to both paths
 
