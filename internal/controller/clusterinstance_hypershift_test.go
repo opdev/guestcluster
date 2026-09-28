@@ -38,6 +38,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
@@ -190,6 +191,12 @@ func TestHCPAPIEndpointIsRecordedAndSharedAcrossResources(t *testing.T) {
 		t.Fatalf("updating HostedCluster status: %v", err)
 	}
 	nodePool := resources.BuildNodePool(instance, hc.Name, hc.Namespace, 1)
+	if err := controllerutil.SetControllerReference(hc, nodePool, c.Scheme()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.setHCPResourceOwner(instance, nodePool); err != nil {
+		t.Fatal(err)
+	}
 	nodePool.Status.Replicas = 1
 	if err := c.Create(ctx, nodePool); err != nil {
 		t.Fatalf("creating ready NodePool: %v", err)

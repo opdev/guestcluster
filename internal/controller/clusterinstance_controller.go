@@ -376,7 +376,11 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 
 func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
 	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+		var conflict apiEndpointConflictError
+		if errors.As(err, &conflict) {
+			return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+		}
+		return ctrl.Result{}, err
 	} else if recorded {
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
@@ -422,7 +426,12 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	return r.markReady(ctx, instance, res.ocpVersion, res.apiEndpoint, res.kubeconfig)
+	result, err := r.markReady(ctx, instance, res.ocpVersion, res.apiEndpoint, res.kubeconfig)
+	var conflict apiEndpointConflictError
+	if errors.As(err, &conflict) {
+		return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+	}
+	return result, err
 }
 
 // markReady publishes the kubeconfig to the canonical per-instance Secret,
@@ -453,11 +462,30 @@ func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *bro
 
 	// changed also covers a missing owner reference, so secrets created
 	// before owner-reference support was added still get backfilled once.
+	verifyKubeconfig := func(existing *corev1.Secret) error { return nil }
+	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
+		verifyKubeconfig = func(existing *corev1.Secret) error {
+			for _, owner := range existing.OwnerReferences {
+				if owner.Kind == "ClusterInstance" && owner.Name == instance.Name && owner.UID == instance.UID {
+					return nil
+				}
+			}
+			// Older published kubeconfigs did not have an owner reference.
+			// Only a recorded Ready instance can claim its labelled Secret.
+			if len(existing.OwnerReferences) == 0 && instance.Status.Phase == brokerv1alpha1.PhaseReady &&
+				instance.Status.KubeconfigSecretRef.Name == secretName && instance.Status.APIEndpoint != "" &&
+				existing.Labels[resources.LabelManagedBy] == resources.ManagerName &&
+				existing.Labels[resources.LabelInstance] == instance.Name {
+				return nil
+			}
+			return apiEndpointConflict("kubeconfig Secret %s/%s is not owned by ClusterInstance %s/%s", instance.Namespace, secretName, instance.Namespace, instance.Name)
+		}
+	}
 	if err := r.upsertSecret(ctx, secret, func(existing *corev1.Secret) bool {
 		return !bytes.Equal(existing.Data[resources.KubeconfigSecretKey], kubeconfig) ||
 			string(existing.Data[resources.OCPVersionSecretKey]) != ocpVersion ||
 			len(existing.OwnerReferences) == 0
-	}); err != nil {
+	}, verifyKubeconfig); err != nil {
 		return ctrl.Result{}, fmt.Errorf("upserting kubeconfig secret %s/%s: %w", instance.Namespace, secretName, err)
 	}
 
@@ -647,9 +675,13 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 		}
 	}
 
+	verify := func(existing *corev1.Secret) error { return nil }
+	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
+		verify = func(existing *corev1.Secret) error { return r.verifyHCPResource(ctx, instance, existing) }
+	}
 	if err := r.upsertSecret(ctx, desired, func(existing *corev1.Secret) bool {
 		return !bytes.Equal(existing.Data[resources.PullSecretDataKey], data)
-	}); err != nil {
+	}, verify); err != nil {
 		return "", fmt.Errorf("upserting default pull secret %s/%s: %w", targetNamespace, copyName, err)
 	}
 
