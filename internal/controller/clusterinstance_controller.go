@@ -37,6 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	routev1 "github.com/openshift/api/route/v1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
@@ -175,7 +176,7 @@ func (r *ClusterInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if instance.Spec.Type == brokerv1alpha1.TopologyCRC {
 			return r.reconcileReadyCRC(ctx, instance)
 		}
-		return r.reconcileLeaseRefProjection(ctx, instance)
+		return r.reconcileReadyHyperShift(ctx, instance)
 	}
 
 	switch instance.Spec.Type {
@@ -318,6 +319,10 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 
 	res, err := r.ensureCRCBacking(ctx, instance, bundleKeyDataKey, pullSecretName)
 	if err != nil {
+		var endpointConflict apiEndpointConflictError
+		if errors.As(err, &endpointConflict) {
+			return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", err)
+		}
 		if isCRCBootKeyError(err) {
 			return r.markCRCBootKeyUnavailable(ctx, instance, err)
 		}
@@ -370,35 +375,47 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 }
 
 func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
+		return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+	} else if recorded {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
 	previousStatus := instance.Status.DeepCopy()
-	// resources.DefaultHostedClusterNamespace, where every hcp instance's
-	// HostedCluster, NodePool, and pull-secret copy live, has no guaranteed
-	// creator. This differs from instance.Namespace (created by whatever
-	// provisioned the ClusterPool) and the operator's own namespace
-	// (created by its Deployment manifests). Ensure it exists idempotently,
-	// rather than treating it as an undocumented manual prerequisite.
-	if err := r.ensureNamespace(ctx, resources.DefaultHostedClusterNamespace); err != nil {
+	// Use the recorded location for both local instances and legacy clusters.
+	namespace, _ := hcpLocation(instance)
+	if err := r.ensureNamespace(ctx, namespace); err != nil {
 		return r.markFailedWithReason(ctx, instance, "NamespaceEnsureFailed", err)
 	}
 
-	pullSecretName, err := r.resolvePullSecret(ctx, instance, resources.DefaultHostedClusterNamespace)
+	pullSecretName, err := r.resolvePullSecret(ctx, instance, namespace)
 	if err != nil {
 		return r.markFailedWithReason(ctx, instance, "InvalidPullSecret", err)
 	}
 
 	res, err := r.ensureHyperShiftBacking(ctx, instance, pullSecretName)
 	if err != nil {
+		var endpointConflict apiEndpointConflictError
+		if errors.As(err, &endpointConflict) {
+			return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", err)
+		}
 		return r.markFailed(ctx, instance, err)
 	}
 
 	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
 		HostedClusterName:      res.hostedClusterName,
-		HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
+		HostedClusterNamespace: namespace,
 		NodePoolNames:          res.nodePoolNames,
 	}
 
 	if !res.ready {
 		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+		if res.apiRoutePending {
+			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: "APIEndpointRouteNotAdmitted",
+				Message:            fmt.Sprintf("waiting for the API Route for endpoint %q to be admitted", instance.Status.APIEndpoint),
+				ObservedGeneration: instance.Generation,
+			})
+		}
 		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while provisioning HyperShift"); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -612,6 +629,12 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{resources.PullSecretDataKey: data},
 	}
+	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
+		desired.Labels = resources.APIEndpointLabels(instance)
+		if err := r.verifyExistingHCPResource(ctx, instance, desired); err != nil {
+			return "", err
+		}
+	}
 	// Owner references only work within the same namespace as the owner.
 	// For topologies where targetNamespace == instance.Namespace (crc),
 	// this lets Kubernetes garbage-collect the copy automatically alongside
@@ -761,6 +784,7 @@ func (r *ClusterInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&brokerv1alpha1.ClusterInstance{}).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.instanceForLease)).
 		Watches(&kubevirtv1.VirtualMachineInstance{}, handler.EnqueueRequestsFromMapFunc(r.instanceForVMI)).
+		Watches(&routev1.Route{}, handler.EnqueueRequestsFromMapFunc(r.instanceForRoute)).
 		Named("clusterinstance").
 		Complete(r)
 }

@@ -183,6 +183,7 @@ func TestReconcileDeletionBypassesPlatformGate(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "deleting-hcp", Namespace: testNamespace, Finalizers: []string{instanceFinalizer}, DeletionTimestamp: &deletionTime},
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
+	setLegacyHCPTestPlacement(instance)
 	c := newPlatformFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
@@ -209,7 +210,9 @@ func TestReconcileDeletionWaitsForBackingResourceTeardown(t *testing.T) {
 		Name:       resources.HostedClusterName(instance.Name),
 		Namespace:  resources.DefaultHostedClusterNamespace,
 		Finalizers: []string{"test.example.com/backing-cleanup"},
+		Labels:     resources.CommonLabels(instance),
 	}}
+	setLegacyHCPTestPlacement(instance)
 	c := newPlatformFakeClient(t, instance, backing)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}

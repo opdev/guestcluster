@@ -23,6 +23,8 @@ import (
 	"time"
 
 	configv1 "github.com/openshift/api/config/v1"
+	routev1 "github.com/openshift/api/route/v1"
+	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,14 +38,16 @@ import (
 )
 
 const (
-	statusCRCReleaseImage = "quay.io/example/release:latest"
-	statusCRCPullSecret   = "pull-secret"
-	statusCRCSSHKey       = "bundle-ssh-key"
-	statusHCPReleaseImage = "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64"
-	statusHCPPullSecret   = "hcp-pull-secret"
-	statusHCPMemory       = "8Gi"
-	statusIngressName     = "cluster"
-	statusIngressDomain   = "apps.example.test"
+	statusCRCReleaseImage  = "quay.io/example/release:latest"
+	statusCRCPullSecret    = "pull-secret"
+	testManagementNodeName = "worker-0"
+	testManagementNodeIP   = "192.0.2.10"
+	statusCRCSSHKey        = "bundle-ssh-key"
+	statusHCPReleaseImage  = "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64"
+	statusHCPPullSecret    = "hcp-pull-secret"
+	statusHCPMemory        = "8Gi"
+	statusIngressName      = "cluster"
+	statusIngressDomain    = "apps.example.test"
 )
 
 type countingStatusClient struct {
@@ -298,15 +302,19 @@ func TestClusterInstanceHyperShiftProvisioningSkipsUnchangedStatusUpdate(t *test
 		Spec:       configv1.IngressSpec{Domain: statusIngressDomain},
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+		ObjectMeta: metav1.ObjectMeta{Name: testManagementNodeName},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
-			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.10"}},
+			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: testManagementNodeIP}},
 		},
 	}
 	base := newHyperShiftFakeClient(t, instance, pullSecret, ingress, node)
 	c := &countingStatusClient{Client: base}
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
+		t.Fatal(err)
+	}
+	c.resetStatusUpdates()
 
 	result, err := r.reconcileHyperShift(ctx, instance)
 	if err != nil {
@@ -370,6 +378,15 @@ func newStatusWriteFakeClient(t *testing.T, objects ...client.Object) client.Cli
 	}
 	if err := brokerv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding GuestCluster scheme: %v", err)
+	}
+	if err := configv1.AddToScheme(s); err != nil {
+		t.Fatalf("adding OpenShift Config scheme: %v", err)
+	}
+	if err := routev1.AddToScheme(s); err != nil {
+		t.Fatalf("adding OpenShift Route scheme: %v", err)
+	}
+	if err := hyperv1beta1.AddToScheme(s); err != nil {
+		t.Fatalf("adding HyperShift scheme: %v", err)
 	}
 	return fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(

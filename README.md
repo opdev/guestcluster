@@ -365,8 +365,32 @@ kubectl -n <instance-namespace> create secret generic crc-pull-secret --from-fil
 then reference it via `template.pullSecretRef.name: crc-pull-secret`. The
 Secret must be in the same namespace as the `ClusterInstance`. It is a
 user-provided input, separate from the operator-managed CRC boot-key copy.
-For `hcp`, the operator copies it to the HostedCluster namespace under a
-per-instance name before HyperShift uses it.
+New `hcp` instances reference the local Secret directly. Legacy instances
+whose HostedCluster is in another namespace use a per-instance copy.
+
+#### HCP placement and upgrades
+
+New HostedClusters, NodePools, and generated serving-certificate Secrets live
+in the ClusterInstance namespace. The operator records that location in
+`status.hyperShift` before it creates backing resources. Local pull-secret
+and optional worker SSH-key inputs remain user-owned and survive instance
+cleanup. Generated local resources have instance owner references.
+
+Existing HCP instances in `clusters` keep their recorded location and API
+endpoint. If legacy location status is incomplete, the operator checks existing
+backing resources and source identity before it records the location. It
+reports ambiguous ownership as a conflict instead of adopting or deleting
+another instance's resources.
+
+The API Route stays in the HyperShift control-plane namespace, derived from
+the recorded HostedCluster namespace and name. This combined name must fit
+the 63-character namespace limit; the NodePool name must also fit its DNS
+label limit. The operator rejects unsupported names and collisions caused by
+concatenation or dot replacement before new provisioning. API hostnames use
+the source namespace and instance name and remain fixed after selection.
+
+HyperShift must watch the source namespaces that contain new HostedClusters.
+Verify its deployment scope when enabling HCP pools outside `clusters`.
 
 #### Common to both paths
 
@@ -606,8 +630,8 @@ On the **management** OpenShift cluster:
   Create a `pull-secret` Secret in each pool or instance namespace, for
   example by copying `openshift-config/pull-secret` (see
   [Pull secret](#pull-secret)). `template.pullSecretRef` can name a different
-  Secret in that same namespace. For `hcp`, the operator copies that Secret
-  into the HostedCluster namespace before provisioning.
+  Secret in that same namespace. New HCP instances use the local Secret;
+  legacy HCP instances in another namespace use a copy.
 - For `crc` pools specifically: an extracted CRC bundle `crc.qcow2`,
   hosted at an HTTP-reachable URL, and a `Secret` holding its
   `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`) when you use the

@@ -393,7 +393,7 @@ func BuildHostedClusterAPIRoute(instance *brokerv1alpha1.ClusterInstance, host, 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      HostedClusterAPIRouteName(instance.Name),
 			Namespace: hcpNamespace,
-			Labels:    CommonLabels(instance),
+			Labels:    APIEndpointLabels(instance),
 		},
 		Spec: routev1.RouteSpec{
 			Host: host,
