@@ -17,7 +17,10 @@ limitations under the License.
 package resources
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -38,14 +41,8 @@ const CRCAgentImageEnvVar = "CRC_AGENT_IMAGE"
 // environment (see config/manager/manager.yaml).
 const DefaultCRCAgentImage = "opdev.io/guestcluster-operator-crc-agent:latest"
 
-// CRCAgentServiceAccountEnvVar is the environment variable the manager
-// Deployment sets (see config/manager/manager.yaml, populated at kustomize
-// build time via a `replacements` entry that copies the ServiceAccount's
-// own final metadata.name) to the actual name of the ServiceAccount the
-// crc-agent Job runs as. This indirection exists because config/default
-// applies a namePrefix to every RBAC object it includes, so the
-// ServiceAccount's deployed name is not known until kustomize build time
-// and must not be hardcoded twice (once in YAML, once in Go).
+// CRCAgentServiceAccountEnvVar names the legacy shared account. Existing Jobs
+// keep using it until they finish; new Jobs use CRCAgentAccountName instead.
 const CRCAgentServiceAccountEnvVar = "CRC_AGENT_SERVICE_ACCOUNT"
 
 // DefaultCRCAgentServiceAccount is used when CRCAgentServiceAccountEnvVar is
@@ -53,20 +50,46 @@ const CRCAgentServiceAccountEnvVar = "CRC_AGENT_SERVICE_ACCOUNT"
 // name (for example when running via `make run` outside a Pod).
 const DefaultCRCAgentServiceAccount = "crc-agent"
 
-// CRCAgentServiceAccount resolves the name of the ServiceAccount the
-// crc-agent Job runs as. It must exist, with RBAC to get, create, and
-// update Secrets, in every namespace where ClusterInstances are created.
-// See config/rbac/crc_agent_*.yaml, which provisions it in the operator's
-// own namespace. This is consistent with this project's single-namespace
-// deployment model: ClusterTemplate.PullSecretRef/BundleSSHKeyRef are
-// likewise documented as living "in the operator's namespace".
-// CRCAgentServiceAccount prefers CRCAgentServiceAccountEnvVar, falling back
-// to DefaultCRCAgentServiceAccount when unset.
+// CRCAgentServiceAccount returns the legacy shared account name.
 func CRCAgentServiceAccount() string {
 	if sa := os.Getenv(CRCAgentServiceAccountEnvVar); sa != "" {
 		return sa
 	}
 	return DefaultCRCAgentServiceAccount
+}
+
+const CRCAgentClusterRoleEnvVar = "CRC_AGENT_CLUSTER_ROLE"
+const DefaultCRCAgentClusterRole = "crc-agent-instance-role"
+
+// CRCAgentClusterRole returns the installed name, including any Kustomize prefix.
+func CRCAgentClusterRole() string {
+	if name := os.Getenv(CRCAgentClusterRoleEnvVar); name != "" {
+		return name
+	}
+	return DefaultCRCAgentClusterRole
+}
+
+// CRCAgentAccountName is stable for an instance and stays within the DNS label limit.
+// The hash distinguishes names that share a truncated prefix.
+func CRCAgentAccountName(instanceName string) string {
+	return crcAgentResourceName(instanceName, "-crc-agent-")
+}
+
+func CRCAgentBindingName(instanceName string) string {
+	return crcAgentResourceName(instanceName, "-crc-agent-binding-")
+}
+
+func crcAgentResourceName(instanceName, suffix string) string {
+	hash := sha256.Sum256([]byte(instanceName))
+	digest := hex.EncodeToString(hash[:])[:12]
+	prefix := instanceName
+	if len(prefix) > 63-len(suffix)-len(digest) {
+		prefix = prefix[:63-len(suffix)-len(digest)]
+	}
+	// A truncated DNS subdomain can end at a dot. The appended hyphen
+	// would then start the next DNS label, which the API rejects.
+	prefix = strings.TrimRight(prefix, "-.")
+	return prefix + suffix + digest
 }
 
 const (
@@ -134,7 +157,7 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, ss
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: CRCAgentServiceAccount(),
+					ServiceAccountName: CRCAgentAccountName(instance.Name),
 					Containers: []corev1.Container{
 						{
 							Name:  "crc-agent",

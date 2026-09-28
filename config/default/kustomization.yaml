@@ -40,6 +40,16 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=CRC_AGENT_SERVICE_ACCOUNT].value
+- source:
+    kind: ClusterRole
+    name: crc-agent-instance-role
+    fieldPath: metadata.name
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=CRC_AGENT_CLUSTER_ROLE].value
 
 resources:
 - ../crd

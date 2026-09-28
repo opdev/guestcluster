@@ -466,7 +466,7 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 				Status:     kubevirtv1.VirtualMachineStatus{Ready: true},
 			}
 			job := &batchv1.Job{
-				ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, recoveryVMIUID), Namespace: instance.Namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, recoveryVMIUID), Namespace: instance.Namespace, OwnerReferences: []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: func() *bool { b := true; return &b }()}}},
 				Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
 					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: reason,
 				}}},

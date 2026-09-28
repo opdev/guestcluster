@@ -1,0 +1,67 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: guestcluster-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: |-
+        ClusterInstance is the Schema for the clusterinstances API. It represents a single
+        concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
+        this operator.
+      displayName: Cluster Instance
+      kind: ClusterInstance
+      name: clusterinstances.guestcluster.opdev.io
+      version: v1alpha1
+    - description: |-
+        ClusterLease is the Schema for the clusterleases API. CI creates a ClusterLease to
+        acquire an available guest cluster of a given topology from a ClusterPool. Deleting
+        the ClusterLease releases the instance back to the pool for recycling.
+      displayName: Cluster Lease
+      kind: ClusterLease
+      name: clusterleases.guestcluster.opdev.io
+      version: v1alpha1
+    - description: |-
+        ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
+        guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
+        ClusterLease objects.
+      displayName: Cluster Pool
+      kind: ClusterPool
+      name: clusterpools.guestcluster.opdev.io
+      version: v1alpha1
+  description: Guestcluster Operator description. TODO.
+  displayName: Guestcluster Operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - guestcluster-operator
+  links:
+  - name: Guestcluster Operator
+    url: https://guestcluster-operator.domain
+  maintainers:
+  - email: your@email.com
+    name: Maintainer Name
+  maturity: alpha
+  provider:
+    name: Provider Name
+    url: https://your.domain
+  version: 0.0.0

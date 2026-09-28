@@ -9,7 +9,6 @@ rules:
   resources:
   - configmaps
   - nodes
-  - serviceaccounts
   verbs:
   - get
   - list
@@ -48,6 +47,16 @@ rules:
   resources:
   - pods
   verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
   - delete
   - get
   - list
@@ -182,9 +191,20 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
+  - clusterroles
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
   - rolebindings
   verbs:
+  - create
+  - delete
+  - get
   - list
+  - update
 - apiGroups:
   - route.openshift.io
   resources:

@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: guestcluster-operator
+  name: guestcluster-operator-clusterlease-admin-role
+rules:
+- apiGroups:
+  - guestcluster.opdev.io
+  resources:
+  - clusterleases
+  verbs:
+  - '*'
+- apiGroups:
+  - guestcluster.opdev.io
+  resources:
+  - clusterleases/status
+  verbs:
+  - get
