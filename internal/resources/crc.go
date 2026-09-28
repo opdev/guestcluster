@@ -253,7 +253,7 @@ func BuildCRCAPIRoute(instance *brokerv1alpha1.ClusterInstance, host, serviceNam
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      CRCAPIRouteName(instance.Name),
 			Namespace: instance.Namespace,
-			Labels:    CommonLabels(instance),
+			Labels:    APIEndpointLabels(instance),
 		},
 		Spec: routev1.RouteSpec{
 			Host: host,

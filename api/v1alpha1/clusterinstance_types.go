@@ -106,8 +106,8 @@ type CRCBootKeyStatus struct {
 type HyperShiftBackingStatus struct {
 	// HostedClusterName is the name of the hypershift.openshift.io/v1beta1 HostedCluster.
 	HostedClusterName string `json:"hostedClusterName,omitempty"`
-	// HostedClusterNamespace is the namespace holding the HostedCluster (conventionally
-	// "clusters").
+	// HostedClusterNamespace records the namespace holding the HostedCluster.
+	// New instances use their source namespace. Legacy instances can use "clusters".
 	HostedClusterNamespace string `json:"hostedClusterNamespace,omitempty"`
 	// NodePoolNames lists the NodePool(s) backing this instance's workers.
 	NodePoolNames []string `json:"nodePoolNames,omitempty"`

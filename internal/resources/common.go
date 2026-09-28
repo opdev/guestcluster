@@ -40,6 +40,11 @@ const LabelManagedBy = "opdev.io/managed-by"
 // LabelInstance names the owning ClusterInstance on every backing object.
 const LabelInstance = "opdev.io/cluster-instance"
 
+// LabelInstanceNamespace records the source namespace on globally routed API
+// endpoints. The Route itself can live in a different namespace from its
+// ClusterInstance.
+const LabelInstanceNamespace = "opdev.io/cluster-instance-namespace"
+
 // LabelPool names the owning ClusterPool on every ClusterInstance the pool
 // controller creates. This lets code list a pool's instances with a label
 // selector (client.MatchingLabels), instead of an unfiltered List plus a
@@ -58,6 +63,15 @@ func CommonLabels(instance *brokerv1alpha1.ClusterInstance) map[string]string {
 		LabelManagedBy: ManagerName,
 		LabelInstance:  instance.Name,
 	}
+}
+
+// APIEndpointLabels adds the source namespace to the common labels so Route
+// events can map back to the exact ClusterInstance, even when two namespaces
+// contain instances with the same name.
+func APIEndpointLabels(instance *brokerv1alpha1.ClusterInstance) map[string]string {
+	labels := CommonLabels(instance)
+	labels[LabelInstanceNamespace] = instance.Namespace
+	return labels
 }
 
 // PoolLabels returns the label set that the ClusterPool controller applies to
@@ -88,8 +102,8 @@ func DataVolumeName(instanceName string) string {
 	return instanceName + "-rootdisk"
 }
 
-// DefaultHostedClusterNamespace is the conventional namespace for HyperShift
-// HostedCluster/NodePool objects. Its HCP pods land in "clusters-<name>".
+// DefaultHostedClusterNamespace is the legacy shared namespace for HyperShift
+// HostedCluster/NodePool objects. New instances use their source namespace.
 const DefaultHostedClusterNamespace = "clusters"
 
 // HostedClusterName is the deterministic name of the HostedCluster backing a
@@ -206,31 +220,42 @@ func CRCAPIRouteName(instanceName string) string {
 	return instanceName + "-crc-api"
 }
 
-// APIServerHostname returns the legacy deterministic hostname used by the
-// HyperShift path. Keep this name stable because existing HostedClusters,
-// serving certificates, and kubeconfigs use it. CRC uses
-// CRCAPIServerHostname because Route hosts must be unique across namespaces.
+// APIServerHostname returns the legacy, instance-name-only hostname used by
+// older HyperShift provisioned clusters. Keep it for endpoint recovery:
+// existing HostedClusters, serving certificates, Routes, and kubeconfigs
+// can still use this value. New endpoints use APIHostname.
 func APIServerHostname(instanceName, mgmtIngressDomain string) string {
 	return fmt.Sprintf("api-%s.%s", instanceName, mgmtIngressDomain)
 }
 
 const (
-	crcAPIHostnameHashLength  = 16 // 64 bits of the SHA-256 identity hash.
+	apiHostnameHashLength     = 16 // 64 bits of the SHA-256 identity hash.
 	dns1123LabelMaxLength     = 63
 	dns1123SubdomainMaxLength = 253
 )
 
-// CRCAPIServerHostname returns the stable, externally-routable hostname for a
-// CRC ClusterInstance. Its identity hash includes both namespace and instance
+// APIHostname returns the stable, externally-routable hostname for a
+// ClusterInstance. Its identity hash includes both namespace and instance
 // name, so same-named instances in different namespaces have different Route
 // hosts. It shortens the readable instance-name prefix as needed to keep each
 // DNS label within 63 characters and the full hostname within 253 characters.
-func CRCAPIServerHostname(instanceName, instanceNamespace, mgmtIngressDomain string) (string, error) {
+// The hash input uses a NUL separator between namespace and name, so ambiguous
+// concatenations cannot identify the same object.
+func APIHostname(instanceName, instanceNamespace, mgmtIngressDomain string) (string, error) {
 	if instanceName == "" {
 		return "", fmt.Errorf("instance name must not be empty")
 	}
 	if instanceNamespace == "" {
 		return "", fmt.Errorf("instance namespace must not be empty")
+	}
+	if problems := validation.IsDNS1123Subdomain(instanceName); len(problems) > 0 {
+		return "", fmt.Errorf("instance name %q is not a valid DNS subdomain: %s", instanceName, strings.Join(problems, ", "))
+	}
+	if problems := validation.IsDNS1123Label(instanceNamespace); len(problems) > 0 {
+		return "", fmt.Errorf("instance namespace %q is not a valid DNS label: %s", instanceNamespace, strings.Join(problems, ", "))
+	}
+	if problems := validation.IsDNS1123Subdomain(mgmtIngressDomain); len(problems) > 0 {
+		return "", fmt.Errorf("management ingress domain %q is not a valid DNS subdomain: %s", mgmtIngressDomain, strings.Join(problems, ", "))
 	}
 
 	labelLimit := dns1123SubdomainMaxLength - len(mgmtIngressDomain) - 1
@@ -239,13 +264,13 @@ func CRCAPIServerHostname(instanceName, instanceNamespace, mgmtIngressDomain str
 	}
 	// The label must hold "api-", a separator, and the full hash. If the
 	// ingress domain leaves less space, no valid unique CRC hostname can fit.
-	const labelFixedLength = len("api--") + crcAPIHostnameHashLength
+	const labelFixedLength = len("api--") + apiHostnameHashLength
 	if labelLimit < labelFixedLength {
-		return "", fmt.Errorf("management ingress domain %q leaves no room for a unique CRC API hostname", mgmtIngressDomain)
+		return "", fmt.Errorf("management ingress domain %q leaves no room for a unique API hostname", mgmtIngressDomain)
 	}
 
 	identityHash := sha256.Sum256([]byte(instanceNamespace + "\x00" + instanceName))
-	hash := hex.EncodeToString(identityHash[:])[:crcAPIHostnameHashLength]
+	hash := hex.EncodeToString(identityHash[:])[:apiHostnameHashLength]
 	namePrefix := dnsSafeHostnameLabel(instanceName)
 	nameLimit := labelLimit - labelFixedLength
 	if len(namePrefix) > nameLimit {
@@ -254,9 +279,16 @@ func CRCAPIServerHostname(instanceName, instanceNamespace, mgmtIngressDomain str
 
 	hostname := fmt.Sprintf("api-%s-%s.%s", namePrefix, hash, mgmtIngressDomain)
 	if problems := validation.IsDNS1123Subdomain(hostname); len(problems) > 0 {
-		return "", fmt.Errorf("generated CRC API hostname %q is not a valid DNS name: %s", hostname, strings.Join(problems, ", "))
+		return "", fmt.Errorf("generated API hostname %q is not a valid DNS name: %s", hostname, strings.Join(problems, ", "))
 	}
 	return hostname, nil
+}
+
+// CRCAPIServerHostname keeps the established CRC API and its hostname output.
+// New CRC and HCP endpoints share APIHostname so both topologies use the same
+// namespace-aware identity rule.
+func CRCAPIServerHostname(instanceName, instanceNamespace, mgmtIngressDomain string) (string, error) {
+	return APIHostname(instanceName, instanceNamespace, mgmtIngressDomain)
 }
 
 // dnsSafeHostnameLabel maps a Kubernetes object name to a lowercase DNS

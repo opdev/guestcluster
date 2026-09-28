@@ -19,14 +19,18 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kubevirtv1 "kubevirt.io/api/core/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -40,6 +44,7 @@ import (
 // instance's backing objects.
 type hypershiftResult struct {
 	ready             bool
+	apiRoutePending   bool
 	ocpVersion        string
 	apiEndpoint       string
 	kubeconfig        []byte
@@ -111,8 +116,8 @@ func desiredReplicas(instance *brokerv1alpha1.ClusterInstance) int32 {
 	return 1
 }
 
-// resolveHCPWorkerSSHKey copies ClusterTemplate.HCPWorkerSSHKeyRef (if set)
-// into targetNamespace, under resources.HCPWorkerSSHKeyName, and validates
+// resolveHCPWorkerSSHKey uses a local input directly, or copies it for a legacy
+// cross-namespace HostedCluster under resources.HCPWorkerSSHKeyName. It validates
 // that it carries the data key HyperShift itself requires. targetNamespace
 // must be the HostedCluster's own namespace, because HostedCluster.spec.sshKey
 // is a LocalObjectReference resolved relative to the HostedCluster itself;
@@ -140,6 +145,9 @@ func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, 
 	if !ok || len(data) == 0 {
 		return "", fmt.Errorf("HCP worker SSH key secret %s/%s is missing data key %q", instance.Namespace, ref.Name, resources.HCPWorkerSSHKeyDataKey)
 	}
+	if targetNamespace == instance.Namespace {
+		return ref.Name, nil
+	}
 
 	copyName := resources.HCPWorkerSSHKeyName(instance.Name)
 	desired := &corev1.Secret{
@@ -150,6 +158,10 @@ func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, 
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{resources.HCPWorkerSSHKeyDataKey: data},
+	}
+	desired.Labels = resources.APIEndpointLabels(instance)
+	if err := r.verifyExistingHCPResource(ctx, instance, desired); err != nil {
+		return "", err
 	}
 
 	changed := func(existing *corev1.Secret) bool {
@@ -182,6 +194,11 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 	if getErr != nil && !apierrors.IsNotFound(getErr) {
 		return "", nil, fmt.Errorf("getting KAS serving cert secret %s/%s: %w", targetNamespace, secretName, getErr)
 	}
+	if getErr == nil {
+		if err := r.verifyHCPResource(ctx, instance, existing); err != nil {
+			return "", nil, err
+		}
+	}
 
 	if getErr == nil && !resources.ServingCertNeedsRegen(existing.Data[corev1.TLSCertKey], hostname) {
 		return secretName, existing.Data[corev1.TLSCertKey], nil
@@ -203,6 +220,9 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 			corev1.TLSCertKey:       certPEM,
 			corev1.TLSPrivateKeyKey: keyPEM,
 		},
+	}
+	if err := r.setHCPResourceOwner(instance, desired); err != nil {
+		return "", nil, err
 	}
 
 	// Unlike upsertSecret's callers, ensureKASServingCert already decided
@@ -226,6 +246,244 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 	return secretName, certPEM, nil
 }
 
+// resolveHCPAPIHostname selects the endpoint once and recovers it from the
+// HostedCluster, Route, or serving certificate if older status did not record
+// it. It returns persist=true when status must be written before any resource
+// that depends on the endpoint is created.
+func (r *ClusterInstanceReconciler) resolveHCPAPIHostname(
+	ctx context.Context,
+	instance *brokerv1alpha1.ClusterInstance,
+	hostedCluster *hyperv1beta1.HostedCluster,
+	hostedClusterExists bool,
+	hcpNamespace string,
+) (hostname string, persist bool, err error) {
+	evidence, err := r.existingHCPAPIHostname(ctx, instance, hostedCluster, hostedClusterExists, hcpNamespace)
+	if err != nil {
+		return "", false, err
+	}
+
+	if instance.Status.APIEndpoint != "" {
+		statusHostname, parseErr := apiEndpointHostname(instance.Status.APIEndpoint)
+		if parseErr != nil {
+			return "", false, parseErr
+		}
+		if evidence != "" && evidence != statusHostname {
+			return "", false, apiEndpointConflict("stored API endpoint %q conflicts with existing resource hostname %q", statusHostname, evidence)
+		}
+		hostname = statusHostname
+	} else if evidence != "" {
+		hostname = evidence
+	} else {
+		domain, domainErr := r.mgmtIngressDomain(ctx)
+		if domainErr != nil {
+			return "", false, fmt.Errorf("resolving management cluster ingress domain: %w", domainErr)
+		}
+		hostname, err = resources.APIHostname(instance.Name, instance.Namespace, domain)
+		if err != nil {
+			return "", false, fmt.Errorf("building HCP API hostname: %w", err)
+		}
+	}
+	if err := validateAPIHostname(hostname); err != nil {
+		return "", false, err
+	}
+
+	if err := r.ensureAPIHostnameAvailable(ctx, hostname, types.NamespacedName{
+		Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: hcpNamespace,
+	}); err != nil {
+		return "", false, err
+	}
+
+	if instance.Status.APIEndpoint == "" {
+		instance.Status.APIEndpoint = "https://" + hostname
+		return hostname, true, nil
+	}
+	return hostname, false, nil
+}
+
+func (r *ClusterInstanceReconciler) existingHCPAPIHostname(
+	ctx context.Context,
+	instance *brokerv1alpha1.ClusterInstance,
+	hostedCluster *hyperv1beta1.HostedCluster,
+	hostedClusterExists bool,
+	hcpNamespace string,
+) (string, error) {
+	var evidence string
+	if hostedClusterExists {
+		var names []string
+		if configuration := hostedCluster.Spec.Configuration; configuration != nil && configuration.APIServer != nil {
+			for _, namedCert := range configuration.APIServer.ServingCerts.NamedCertificates {
+				if namedCert.ServingCertificate.Name == resources.KASServingCertName(instance.Name) {
+					names = append(names, namedCert.Names...)
+				}
+			}
+		}
+		if len(names) != 1 || names[0] == "" {
+			return "", apiEndpointConflict("HostedCluster %s/%s does not have exactly one named certificate for its external API endpoint", hostedCluster.Namespace, hostedCluster.Name)
+		}
+		if err := ensureHostnameEvidenceMatches(names[0], "HostedCluster named certificate", &evidence); err != nil {
+			return "", err
+		}
+	}
+
+	hostedClusterNamespace, _ := hcpLocation(instance)
+	if hostedClusterExists && hostedCluster.Namespace != "" {
+		hostedClusterNamespace = hostedCluster.Namespace
+	}
+	certHostname, certExists, err := r.getServingCertHostname(ctx, instance, hostedClusterNamespace, resources.KASServingCertName(instance.Name))
+	if err != nil {
+		return "", err
+	}
+	if hostedClusterExists && !certExists {
+		return "", apiEndpointConflict("KAS serving certificate Secret %s/%s referenced by HostedCluster %s/%s is missing", hostedClusterNamespace, resources.KASServingCertName(instance.Name), hostedCluster.Namespace, hostedCluster.Name)
+	}
+	if certExists {
+		if err := ensureHostnameEvidenceMatches(certHostname, "KAS serving certificate", &evidence); err != nil {
+			return "", err
+		}
+	}
+
+	routeKey := types.NamespacedName{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: hcpNamespace}
+	existingRoute := &routev1.Route{}
+	if err := r.Get(ctx, routeKey, existingRoute); err == nil {
+		if !routeOwnedByInstance(existingRoute, instance) {
+			return "", apiEndpointConflict("HostedCluster API Route %s/%s is not labelled for ClusterInstance %s/%s", routeKey.Namespace, routeKey.Name, instance.Namespace, instance.Name)
+		}
+		if existingRoute.Spec.Host == "" {
+			return "", apiEndpointConflict("HostedCluster API Route %s/%s has an empty host", routeKey.Namespace, routeKey.Name)
+		}
+		if err := ensureHostnameEvidenceMatches(existingRoute.Spec.Host, "HostedCluster API Route", &evidence); err != nil {
+			return "", err
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("getting HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
+	}
+	return evidence, nil
+}
+
+// reconcileReadyHyperShift preserves Ready only while the recorded external
+// API endpoint still has its verified Route. It also recovers old Ready
+// instances whose status did not record the endpoint.
+func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	hostedClusterNamespace, hostedClusterName := hcpLocation(instance)
+	hostedCluster := &hyperv1beta1.HostedCluster{}
+	hostedClusterKey := types.NamespacedName{Name: hostedClusterName, Namespace: hostedClusterNamespace}
+	if err := r.Get(ctx, hostedClusterKey, hostedCluster); apierrors.IsNotFound(err) {
+		// The existing Ready behavior does not recreate a missing HostedCluster.
+		// Leave lifecycle recovery to the provisioning path after an explicit
+		// phase change instead of creating a new guest cluster from this check.
+		return r.reconcileLeaseRefProjection(ctx, instance)
+	} else if err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting HostedCluster %s/%s while checking its endpoint: %w", hostedClusterKey.Namespace, hostedClusterKey.Name, err)
+	}
+	if err := r.verifyHCPResource(ctx, instance, hostedCluster); err != nil {
+		return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
+	}
+	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	} else if recorded {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
+
+	hcpNamespace := resources.HostedControlPlaneNamespace(hostedClusterNamespace, hostedClusterName)
+	previousStatus := instance.Status.DeepCopy()
+	hostname, persistEndpoint, err := r.resolveHCPAPIHostname(ctx, instance, hostedCluster, true, hcpNamespace)
+	if err != nil {
+		var endpointConflict apiEndpointConflictError
+		if errors.As(err, &endpointConflict) {
+			return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", err)
+		}
+		return ctrl.Result{}, err
+	}
+	if persistEndpoint {
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "recording recovered HyperShift API endpoint"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
+
+	routeKey := types.NamespacedName{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: hcpNamespace}
+	apiRoute := &routev1.Route{}
+	if err := r.Get(ctx, routeKey, apiRoute); apierrors.IsNotFound(err) {
+		desired := resources.BuildHostedClusterAPIRoute(instance, hostname, hcpNamespace)
+		createErr := r.Create(ctx, desired)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return ctrl.Result{}, fmt.Errorf("creating HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, createErr)
+		}
+		if apierrors.IsAlreadyExists(createErr) {
+			if getErr := r.Get(ctx, routeKey, apiRoute); getErr != nil {
+				return ctrl.Result{}, fmt.Errorf("getting concurrently created HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, getErr)
+			}
+		} else {
+			return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
+		}
+	} else if err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
+	}
+	if !routeOwnedByInstance(apiRoute, instance) || apiRoute.Spec.Host != hostname {
+		return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", apiEndpointConflict("HostedCluster API Route %s/%s does not match the recorded endpoint hostname %q", routeKey.Namespace, routeKey.Name, hostname))
+	}
+	if !routeIsAdmitted(apiRoute) {
+		return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
+	}
+
+	if instance.Status.Phase != brokerv1alpha1.PhaseReady {
+		instance.Status.Phase = brokerv1alpha1.PhaseReady
+		apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type: conditionTypeReady, Status: metav1.ConditionTrue, Reason: "BackingResourcesAvailable",
+			Message: "Guest cluster is provisioned and kubeconfig is available", ObservedGeneration: instance.Generation,
+		})
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "restoring HyperShift Ready status after Route admission"); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return r.reconcileLeaseRefProjection(ctx, instance)
+}
+
+func (r *ClusterInstanceReconciler) markHCPRoutePending(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus, hostname string) (ctrl.Result, error) {
+	instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: "APIEndpointRouteNotAdmitted",
+		Message: fmt.Sprintf("waiting for API Route hostname %q to be admitted", hostname), ObservedGeneration: instance.Generation,
+	})
+	if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating HyperShift status while waiting for API Route admission"); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+func (r *ClusterInstanceReconciler) ensureHostedClusterAPIRoute(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, hostname, hcpNamespace string) (bool, error) {
+	apiRoute := resources.BuildHostedClusterAPIRoute(instance, hostname, hcpNamespace)
+	key := types.NamespacedName{Name: apiRoute.Name, Namespace: apiRoute.Namespace}
+	existing := &routev1.Route{}
+	if err := r.Get(ctx, key, existing); apierrors.IsNotFound(err) {
+		createErr := r.Create(ctx, apiRoute)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, fmt.Errorf("creating HostedCluster API Route %s/%s: %w", key.Namespace, key.Name, createErr)
+		}
+		if apierrors.IsAlreadyExists(createErr) {
+			if getErr := r.Get(ctx, key, existing); getErr != nil {
+				return false, fmt.Errorf("getting concurrently created HostedCluster API Route %s/%s: %w", key.Namespace, key.Name, getErr)
+			}
+		} else {
+			logf.FromContext(ctx).Info("created HostedCluster API Route", "route", apiRoute.Name, "host", hostname)
+			return false, nil
+		}
+	} else if err != nil {
+		return false, fmt.Errorf("getting HostedCluster API Route %s/%s: %w", key.Namespace, key.Name, err)
+	}
+	if !routeOwnedByInstance(existing, instance) {
+		return false, apiEndpointConflict("HostedCluster API Route %s/%s is not labelled for ClusterInstance %s/%s", key.Namespace, key.Name, instance.Namespace, instance.Name)
+	}
+	if existing.Spec.Host != hostname {
+		return false, apiEndpointConflict("HostedCluster API Route %s/%s uses hostname %q, expected recorded hostname %q", key.Namespace, key.Name, existing.Spec.Host, hostname)
+	}
+	if !routeIsAdmitted(existing) {
+		logf.FromContext(ctx).Info("waiting for HostedCluster API Route admission", "route", apiRoute.Name, "host", hostname)
+		return false, nil
+	}
+	return true, nil
+}
+
 // ensureHyperShiftBacking creates the HostedCluster and its default
 // NodePool that back a topology=hcp ClusterInstance, if they do not already
 // exist, and reports readiness once the HostedCluster is Available and the
@@ -236,17 +494,11 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 // recreate of the instance.
 func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, pullSecretName string) (hypershiftResult, error) {
 	log := logf.FromContext(ctx)
-	namespace := resources.DefaultHostedClusterNamespace
+	namespace, hcName := hcpLocation(instance)
 	res := hypershiftResult{
-		hostedClusterName: resources.HostedClusterName(instance.Name),
-		nodePoolNames:     []string{resources.NodePoolName(instance.Name)},
+		hostedClusterName: hcName,
+		nodePoolNames:     []string{hcpNodePoolName(instance)},
 	}
-
-	domain, err := r.mgmtIngressDomain(ctx)
-	if err != nil {
-		return res, fmt.Errorf("resolving management cluster ingress domain: %w", err)
-	}
-	apiServerHostname := resources.APIServerHostname(instance.Name, domain)
 
 	// Get the HostedCluster first, before resolving any of the other
 	// inputs BuildHostedCluster needs. Those inputs (the management node
@@ -255,44 +507,41 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	// afterward. So once the HostedCluster exists, later reconciles that
 	// poll for readiness do not need to pay for a cluster-wide Node List
 	// or a Secret Get/copy on every pass.
-	hcName := resources.HostedClusterName(instance.Name)
 	existingHC := &hyperv1beta1.HostedCluster{}
 	getHCErr := r.Get(ctx, types.NamespacedName{Name: hcName, Namespace: namespace}, existingHC)
 	if getHCErr != nil && !apierrors.IsNotFound(getHCErr) {
 		return res, fmt.Errorf("getting HostedCluster %s/%s: %w", namespace, hcName, getHCErr)
 	}
+	hostedClusterExists := getHCErr == nil
+	if hostedClusterExists {
+		if err := r.verifyHCPResource(ctx, instance, existingHC); err != nil {
+			return res, err
+		}
+	}
+	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, hcName)
+	apiServerHostname, endpointNeedsPersist, err := r.resolveHCPAPIHostname(ctx, instance, existingHC, hostedClusterExists, hcpNamespace)
+	if err != nil {
+		return res, err
+	}
+	if endpointNeedsPersist {
+		// reconcileHyperShift writes this status before a later reconcile creates
+		// the serving certificate, HostedCluster, Route, or published kubeconfig.
+		return res, nil
+	}
 
-	if apierrors.IsNotFound(getHCErr) {
-		nodePortAddress, err := r.managementNodeAddress(ctx)
-		if err != nil {
-			return res, fmt.Errorf("resolving NodePort.Address for HostedCluster APIServer service: %w", err)
-		}
-		sshKeySecretName, err := r.resolveHCPWorkerSSHKey(ctx, instance, namespace)
-		if err != nil {
-			return res, fmt.Errorf("resolving HCP worker SSH key: %w", err)
-		}
-		servingCertName, _, err := r.ensureKASServingCert(ctx, instance, namespace, apiServerHostname)
-		if err != nil {
-			return res, fmt.Errorf("ensuring KAS serving certificate: %w", err)
-		}
-
-		hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
-			Namespace:           namespace,
-			PullSecretName:      pullSecretName,
-			NodePortAddress:     nodePortAddress,
-			ServingCertName:     servingCertName,
-			ServingCertHostname: apiServerHostname,
-			SSHKeySecretName:    sshKeySecretName,
-		})
-		if err := r.Create(ctx, hc); err != nil && !apierrors.IsAlreadyExists(err) {
-			return res, fmt.Errorf("creating HostedCluster %s/%s: %w", hc.Namespace, hc.Name, err)
-		}
-		log.Info("created HostedCluster", "hostedCluster", hc.Name)
-		return res, nil // freshly created, definitely not ready yet
+	if !hostedClusterExists {
+		return res, r.createHostedCluster(ctx, instance, pullSecretName, apiServerHostname)
 	}
 
 	replicas := desiredReplicas(instance)
 	np := resources.BuildNodePool(instance, existingHC.Name, namespace, replicas)
+	np.Name = hcpNodePoolName(instance)
+	if err := controllerutil.SetControllerReference(existingHC, np, r.Scheme); err != nil {
+		return res, err
+	}
+	if err := r.setHCPResourceOwner(instance, np); err != nil {
+		return res, err
+	}
 	existingNP := &hyperv1beta1.NodePool{}
 	if err := r.Get(ctx, types.NamespacedName{Name: np.Name, Namespace: np.Namespace}, existingNP); apierrors.IsNotFound(err) {
 		if err := r.Create(ctx, np); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -302,6 +551,9 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 		return res, nil
 	} else if err != nil {
 		return res, fmt.Errorf("getting NodePool %s/%s: %w", np.Namespace, np.Name, err)
+	}
+	if err := r.verifyHCPResource(ctx, instance, existingNP); err != nil {
+		return res, err
 	}
 
 	if existingNP.Spec.Replicas == nil || *existingNP.Spec.Replicas != replicas {
@@ -345,24 +597,22 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	// path would otherwise provision a separate, often slow or unreachable
 	// dedicated LoadBalancer. Unlike that LoadBalancer path, this Route's
 	// host is fixed at creation time and becomes usable as soon as the
-	// management cluster's router admits it, so creating it needs no
-	// additional readiness gating.
+	// management cluster's router admits it. The instance stays in
+	// Provisioning until that admission is visible in Route status.
 	//
 	// This Route is NOT a DNS SAN on the real kube-apiserver serving
 	// certificate (see BuildHostedCluster's doc comment for why), hence
 	// the InsecureSkipTLSVerify rewrite below.
-	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, instance.Name)
-	apiRoute := resources.BuildHostedClusterAPIRoute(instance, apiServerHostname, hcpNamespace)
-	if err := r.Get(ctx, types.NamespacedName{Name: apiRoute.Name, Namespace: apiRoute.Namespace}, &routev1.Route{}); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, apiRoute); err != nil && !apierrors.IsAlreadyExists(err) {
-			return res, fmt.Errorf("creating HostedCluster API Route %s/%s: %w", apiRoute.Namespace, apiRoute.Name, err)
-		}
-		log.Info("created HostedCluster API Route", "route", apiRoute.Name, "host", apiServerHostname)
-	} else if err != nil {
-		return res, fmt.Errorf("getting HostedCluster API Route %s/%s: %w", apiRoute.Namespace, apiRoute.Name, err)
+	routeAdmitted, err := r.ensureHostedClusterAPIRoute(ctx, instance, apiServerHostname, hcpNamespace)
+	if err != nil {
+		return res, err
+	}
+	if !routeAdmitted {
+		res.apiRoutePending = true
+		return res, nil
 	}
 
-	apiEndpoint := "https://" + apiServerHostname
+	apiEndpoint := instance.Status.APIEndpoint
 
 	// This call is only needed now, to embed the certificate as
 	// certificate-authority-data below. The HostedCluster is Available and
@@ -400,6 +650,35 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	return res, nil
 }
 
+func (r *ClusterInstanceReconciler) createHostedCluster(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, pullSecretName, hostname string) error {
+	namespace, name := hcpLocation(instance)
+	nodePortAddress, err := r.managementNodeAddress(ctx)
+	if err != nil {
+		return fmt.Errorf("resolving NodePort.Address for HostedCluster APIServer service: %w", err)
+	}
+	sshKeySecretName, err := r.resolveHCPWorkerSSHKey(ctx, instance, namespace)
+	if err != nil {
+		return fmt.Errorf("resolving HCP worker SSH key: %w", err)
+	}
+	servingCertName, _, err := r.ensureKASServingCert(ctx, instance, namespace, hostname)
+	if err != nil {
+		return fmt.Errorf("ensuring KAS serving certificate: %w", err)
+	}
+	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
+		Namespace: namespace, PullSecretName: pullSecretName,
+		NodePortAddress: nodePortAddress, ServingCertName: servingCertName,
+		ServingCertHostname: hostname, SSHKeySecretName: sshKeySecretName,
+	})
+	hc.Name = name
+	if err := r.setHCPResourceOwner(instance, hc); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, hc); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating HostedCluster %s/%s: %w", hc.Namespace, hc.Name, err)
+	}
+	return nil
+}
+
 // teardownHyperShiftBacking deletes the HostedCluster backing a
 // topology=hcp instance (NodePools are owned by, and cascade with, the
 // HostedCluster in HyperShift's own garbage collection), as part of
@@ -411,15 +690,27 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 // operator/CSV state survives between lease holders, matching the
 // acceptance requirement.
 func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
+	if recorded, err := r.recordHCPPlacement(ctx, instance); recorded || err != nil {
+		return recorded, err
+	}
 	pending := false
 	deleteObject := func(obj client.Object, label string) error {
+		if _, pod := obj.(*corev1.Pod); !pod {
+			if err := r.platformReader().Get(ctx, client.ObjectKeyFromObject(obj), obj); apierrors.IsNotFound(err) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			if err := r.verifyHCPResource(ctx, instance, obj); err != nil {
+				return err
+			}
+		}
 		objectPending, err := r.deleteIfExists(ctx, obj, label)
 		pending = pending || objectPending
 		return err
 	}
 
-	namespace := resources.DefaultHostedClusterNamespace
-	name := resources.HostedClusterName(instance.Name)
+	namespace, name := hcpLocation(instance)
 
 	// Deleting the HostedCluster cascades, via HyperShift's own
 	// controllers, to deleting its entire HostedControlPlane namespace
@@ -437,7 +728,7 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// state (for example, HostedCluster already gone but NodePool GC still
 	// in flight; either state is fine). This call is a best-effort
 	// belt-and-suspenders step and tolerates NotFound.
-	npName := resources.NodePoolName(instance.Name)
+	npName := hcpNodePoolName(instance)
 	np := &hyperv1beta1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: npName, Namespace: namespace}}
 	if err := deleteObject(np, "NodePool"); err != nil {
 		return false, err
@@ -450,8 +741,10 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// copy is. Delete it explicitly here.
 	pullSecretName := resources.DefaultPullSecretName(instance.Name)
 	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pullSecretName, Namespace: namespace}}
-	if err := deleteObject(pullSecret, "pull secret copy"); err != nil {
-		return false, err
+	if namespace != instance.Namespace {
+		if err := deleteObject(pullSecret, "pull secret copy"); err != nil {
+			return false, err
+		}
 	}
 
 	// The same cross-namespace reasoning as the pull secret copy above
@@ -461,8 +754,10 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// this instance.
 	sshKeyName := resources.HCPWorkerSSHKeyName(instance.Name)
 	sshKeySecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sshKeyName, Namespace: namespace}}
-	if err := deleteObject(sshKeySecret, "HCP worker SSH key copy"); err != nil {
-		return false, err
+	if namespace != instance.Namespace {
+		if err := deleteObject(sshKeySecret, "HCP worker SSH key copy"); err != nil {
+			return false, err
+		}
 	}
 
 	// The same cross-namespace reasoning as the pull secret and SSH key
@@ -480,7 +775,7 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 	// KubeVirt VM/VMI templates and identifies this pool without matching
 	// workers from another HostedCluster.
 	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, name)
-	nodePoolName := resources.NodePoolName(instance.Name)
+	nodePoolName := hcpNodePoolName(instance)
 	vmis := &kubevirtv1.VirtualMachineInstanceList{}
 	if err := r.platformReader().List(ctx, vmis,
 		client.InNamespace(hcpNamespace),

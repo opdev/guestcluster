@@ -36,6 +36,7 @@ import (
 	"context"
 	"testing"
 
+	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -55,6 +56,9 @@ func newLeaseRefProjectionFakeClient(t *testing.T, objs ...client.Object) client
 	}
 	if err := brokerv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding brokerv1alpha1 scheme: %v", err)
+	}
+	if err := hyperv1beta1.AddToScheme(s); err != nil {
+		t.Fatalf("adding HyperShift scheme: %v", err)
 	}
 	return fake.NewClientBuilder().
 		WithScheme(s).

@@ -663,6 +663,12 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 	existingRoute := &routev1.Route{}
 	if err := r.Get(ctx, routeKey, existingRoute); err == nil {
 		// Keep existing hosts, including hosts from the old naming rule.
+		if existingRoute.Spec.Host == "" {
+			return "", apiEndpointConflict("CRC API Route %s/%s has an empty host", routeKey.Namespace, routeKey.Name)
+		}
+		if err := r.ensureAPIHostnameAvailable(ctx, existingRoute.Spec.Host, routeKey); err != nil {
+			return "", err
+		}
 		return existingRoute.Spec.Host, nil
 	} else if !apierrors.IsNotFound(err) {
 		return "", fmt.Errorf("getting CRC API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
@@ -670,6 +676,9 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 
 	host, err := r.crcAPIHostnameForNewRoute(ctx, instance)
 	if err != nil {
+		return "", err
+	}
+	if err := r.ensureAPIHostnameAvailable(ctx, host, routeKey); err != nil {
 		return "", err
 	}
 	route := resources.BuildCRCAPIRoute(instance, host, svc.Name)
