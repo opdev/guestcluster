@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"

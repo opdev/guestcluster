@@ -29,7 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/caxu-rh/guestcluster-operator/test/utils"
+	"github.com/opdev/guestcluster/test/utils"
 )
 
 // namespace where the project is deployed in

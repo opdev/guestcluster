@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"github.com/opdev/guestcluster/internal/resources"
 	configv1 "github.com/openshift/api/config/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"

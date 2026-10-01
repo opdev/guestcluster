@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"github.com/opdev/guestcluster/internal/resources"
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

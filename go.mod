@@ -1,4 +1,4 @@
-module github.com/caxu-rh/guestcluster-operator
+module github.com/opdev/guestcluster
 
 go 1.26.0
 

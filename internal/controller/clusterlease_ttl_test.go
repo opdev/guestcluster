@@ -27,8 +27,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"github.com/opdev/guestcluster/internal/resources"
 )
 
 func TestClusterLeaseReconcileBoundSchedulesAtTTLDeadline(t *testing.T) {

@@ -34,8 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"github.com/opdev/guestcluster/internal/resources"
 )
 
 // crcBundleRequeueInterval is how often a CRCBundle whose prep Job is still

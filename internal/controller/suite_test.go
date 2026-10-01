@@ -34,7 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

@@ -9,7 +9,7 @@ plugins:
   manifests.sdk.operatorframework.io/v2: {}
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: guestcluster-operator
-repo: github.com/caxu-rh/guestcluster-operator
+repo: github.com/opdev/guestcluster
 resources:
 - api:
     crdVersion: v1
@@ -18,7 +18,7 @@ resources:
   domain: opdev.io
   group: guestcluster
   kind: ClusterPool
-  path: github.com/caxu-rh/guestcluster-operator/api/v1alpha1
+  path: github.com/opdev/guestcluster/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -27,7 +27,7 @@ resources:
   domain: opdev.io
   group: guestcluster
   kind: ClusterInstance
-  path: github.com/caxu-rh/guestcluster-operator/api/v1alpha1
+  path: github.com/opdev/guestcluster/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -36,6 +36,6 @@ resources:
   domain: opdev.io
   group: guestcluster
   kind: ClusterLease
-  path: github.com/caxu-rh/guestcluster-operator/api/v1alpha1
+  path: github.com/opdev/guestcluster/api/v1alpha1
   version: v1alpha1
 version: "3"

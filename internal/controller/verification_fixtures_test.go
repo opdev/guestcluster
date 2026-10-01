@@ -17,7 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 )
 
 // Shared literal values used across this package's unit and verification

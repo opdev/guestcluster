@@ -25,7 +25,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 )
 
 // Shared fixture literals reused across this file's (and kascert_test.go's)

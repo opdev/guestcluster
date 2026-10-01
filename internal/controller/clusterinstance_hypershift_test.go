@@ -25,6 +25,8 @@ import (
 	"strings"
 	"testing"
 
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"github.com/opdev/guestcluster/internal/resources"
 	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
@@ -41,9 +43,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
 )
 
 const hcpEndpointTestAdminName = "admin"

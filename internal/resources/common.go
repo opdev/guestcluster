@@ -28,7 +28,7 @@ import (
 	"os"
 	"strings"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )

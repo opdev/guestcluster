@@ -30,7 +30,7 @@ import (
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	"github.com/openshift/hypershift/api/util/ipnet"
 
-	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 )
 
 // defaultNodePoolRootVolumeSize mirrors the upstream `hcp create cluster`
