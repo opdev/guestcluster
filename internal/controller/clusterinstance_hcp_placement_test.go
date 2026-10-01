@@ -140,6 +140,9 @@ func TestSameNamedHCPLifecycleIsIndependent(t *testing.T) {
 func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, instance *brokerv1alpha1.ClusterInstance) {
 	t.Helper()
 	ctx := context.Background()
+	if r.GuestAPIReadinessCheck == nil {
+		r.GuestAPIReadinessCheck = func(context.Context, []byte) error { return nil }
+	}
 	for range 4 {
 		if err := r.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
 			t.Fatal(err)
