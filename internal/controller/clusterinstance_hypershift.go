@@ -419,28 +419,15 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	routeKey := types.NamespacedName{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: hcpNamespace}
-	apiRoute := &routev1.Route{}
-	if err := r.Get(ctx, routeKey, apiRoute); apierrors.IsNotFound(err) {
-		desired := resources.BuildHostedClusterAPIRoute(instance, hostname, hcpNamespace)
-		createErr := r.Create(ctx, desired)
-		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return ctrl.Result{}, fmt.Errorf("creating HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, createErr)
+	routeAdmitted, err := r.ensureHostedClusterAPIRoute(ctx, instance, hostname, hcpNamespace)
+	if err != nil {
+		var endpointConflict apiEndpointConflictError
+		if errors.As(err, &endpointConflict) {
+			return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", err)
 		}
-		if apierrors.IsAlreadyExists(createErr) {
-			if getErr := r.Get(ctx, routeKey, apiRoute); getErr != nil {
-				return ctrl.Result{}, fmt.Errorf("getting concurrently created HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, getErr)
-			}
-		} else {
-			return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
-		}
-	} else if err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
+		return ctrl.Result{}, err
 	}
-	if !routeOwnedByInstance(apiRoute, instance) || apiRoute.Spec.Host != hostname {
-		return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", apiEndpointConflict("HostedCluster API Route %s/%s does not match the recorded endpoint hostname %q", routeKey.Namespace, routeKey.Name, hostname))
-	}
-	if !routeIsAdmitted(apiRoute) {
+	if !routeAdmitted {
 		return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
 	}
 	if instance.Status.KubeconfigSecretRef.Name != "" {
