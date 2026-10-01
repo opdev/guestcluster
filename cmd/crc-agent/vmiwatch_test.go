@@ -38,7 +38,10 @@ const (
 
 func TestMonitorCRCVMILifecycleCancelsWhenVMIIsDeleted(t *testing.T) {
 	client := newVMIDynamicClient(t, testVMIUID)
-	cfg := config{Namespace: testVMINamespace, InstanceName: testVMIName, ExpectedVMIUID: testVMIUID}
+	// The recorded VM name can differ from the source instance name.
+	cfg := config{
+		Namespace: testVMINamespace, InstanceName: "source-instance", VMName: testVMIName, ExpectedVMIUID: testVMIUID,
+	}
 	ctx, stop, err := monitorCRCVMILifecycle(context.Background(), client, cfg, discardLog{})
 	if err != nil {
 		t.Fatalf("monitorCRCVMILifecycle: %v", err)
@@ -46,7 +49,7 @@ func TestMonitorCRCVMILifecycleCancelsWhenVMIIsDeleted(t *testing.T) {
 	defer stop()
 
 	vmis := client.Resource(crcVMIGVR).Namespace(cfg.Namespace)
-	if err := vmis.Delete(context.Background(), cfg.InstanceName, metav1.DeleteOptions{}); err != nil {
+	if err := vmis.Delete(context.Background(), cfg.backingVMName(), metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("deleting VMI: %v", err)
 	}
 

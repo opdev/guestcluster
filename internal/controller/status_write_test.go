@@ -257,8 +257,8 @@ func TestClusterInstanceCRCProvisioningSkipsUnchangedStatusUpdate(t *testing.T) 
 	if result.RequeueAfter != requeueInterval {
 		t.Fatalf("first RequeueAfter = %s, want %s", result.RequeueAfter, requeueInterval)
 	}
-	if got := c.statusUpdateCount(); got != 1 {
-		t.Fatalf("first status update count = %d, want 1", got)
+	if got := c.statusUpdateCount(); got != 2 {
+		t.Fatalf("first status update count = %d, want 2 (identity before allocation, then provisioning)", got)
 	}
 
 	current := &brokerv1alpha1.ClusterInstance{}

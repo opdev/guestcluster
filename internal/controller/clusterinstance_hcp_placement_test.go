@@ -147,6 +147,7 @@ func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, in
 		if _, err := r.reconcileHyperShift(ctx, instance); err != nil {
 			t.Fatalf("provisioning %s: %v", client.ObjectKeyFromObject(instance), err)
 		}
+		assignFakeHostedClusterUID(t, r, instance)
 	}
 	if instance.Status.HyperShift.HostedClusterNamespace != instance.Namespace {
 		t.Fatalf("unexpected placement: %+v", instance.Status.HyperShift)
@@ -167,9 +168,26 @@ func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, in
 	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: resources.NodePoolName(instance.Name)}, np); err != nil {
 		t.Fatal(err)
 	}
-	owner := metav1.GetControllerOf(np)
-	if owner == nil || owner.Kind != "HostedCluster" || owner.Name != hc.Name {
-		t.Fatal("NodePool does not retain its HostedCluster controller owner")
+	var hostedClusterOwner *metav1.OwnerReference
+	for i := range np.OwnerReferences {
+		if np.OwnerReferences[i].Kind == "HostedCluster" && np.OwnerReferences[i].Name == hc.Name {
+			hostedClusterOwner = &np.OwnerReferences[i]
+		}
+	}
+	if hostedClusterOwner == nil || hostedClusterOwner.UID != hc.UID {
+		t.Fatal("NodePool does not retain its HostedCluster owner")
+	}
+	if hostedClusterOwner.BlockOwnerDeletion == nil || *hostedClusterOwner.BlockOwnerDeletion {
+		t.Fatalf("NodePool HostedCluster owner must be non-blocking: %+v", hostedClusterOwner)
+	}
+	var instanceOwner *metav1.OwnerReference
+	for i := range np.OwnerReferences {
+		if np.OwnerReferences[i].Kind == clusterInstanceKind {
+			instanceOwner = &np.OwnerReferences[i]
+		}
+	}
+	if instanceOwner == nil || instanceOwner.BlockOwnerDeletion == nil || *instanceOwner.BlockOwnerDeletion {
+		t.Fatalf("NodePool ClusterInstance owner must not block deletion: %+v", instanceOwner)
 	}
 	np.Status.Replicas = 1
 	if err := r.Update(ctx, np); err != nil {
@@ -197,6 +215,19 @@ func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, in
 		t.Fatal(err)
 	}
 	verifyProvisionedHCP(t, r.Client, instance, hc, route)
+}
+
+func assignFakeHostedClusterUID(t *testing.T, r *ClusterInstanceReconciler, instance *brokerv1alpha1.ClusterInstance) {
+	t.Helper()
+	ctx := context.Background()
+	hc := &hyperv1beta1.HostedCluster{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc); err != nil || hc.UID != "" {
+		return
+	}
+	hc.UID = types.UID("hosted-cluster-" + instance.Namespace + "-" + instance.Name)
+	if err := r.Update(ctx, hc); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func verifyProvisionedHCP(t *testing.T, c client.Client, instance *brokerv1alpha1.ClusterInstance, hc *hyperv1beta1.HostedCluster, route *routev1.Route) {

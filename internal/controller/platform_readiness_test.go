@@ -107,7 +107,8 @@ func TestReconcileBlocksHCPBeforeProviderSideEffects(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "blocked-hcp", Namespace: testNamespace},
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
-	c := newPlatformFakeClient(t, instance, healthyHCO("hco"))
+	instance.Status.Provisioning = testProvisioningAuthorization()
+	c := newPlatformFakeClient(t, instance, enabledTestNamespace(testNamespace), healthyHCO("hco"))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
@@ -164,7 +165,8 @@ func TestReconcileReadyHCPProjectsLeaseWhenDependenciesFail(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "lease", Namespace: testNamespace},
 		Status:     brokerv1alpha1.ClusterLeaseStatus{InstanceRef: &corev1.LocalObjectReference{Name: instance.Name}},
 	}
-	c := newPlatformFakeClient(t, instance, lease)
+	instance.Status.Provisioning = testProvisioningAuthorization()
+	c := newPlatformFakeClient(t, instance, lease, enabledTestNamespace(testNamespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -266,7 +268,8 @@ func TestReconcileDoesNotResetFailedInstanceWhenPlatformIsUnavailable(t *testing
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyCRC},
 		Status:     brokerv1alpha1.ClusterInstanceStatus{Phase: brokerv1alpha1.PhaseFailed},
 	}
-	c := newPlatformFakeClient(t, instance)
+	instance.Status.Provisioning = testProvisioningAuthorization()
+	c := newPlatformFakeClient(t, instance, enabledTestNamespace(testNamespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err == nil {
 		t.Fatal("Reconcile succeeded without the required CRC pull secret")

@@ -1,3 +1,5 @@
+# Apply in an enabled namespace watched by HyperShift. Input Secrets are local.
+# See namespace.yaml and docs/namespaces.md.
 apiVersion: guestcluster.opdev.io/v1alpha1
 kind: ClusterPool
 metadata:

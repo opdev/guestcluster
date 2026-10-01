@@ -151,10 +151,13 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 // safely in place. Drift correction here only re-creates objects that were
 // deleted out-of-band; it does not patch existing ones.
 func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, bundleKeyDataKey, pullSecretName string) (crcResult, error) {
+	if instance.Status.Provisioning != nil && instance.Status.Provisioning.Legacy && instance.Spec.Template.CRCVersion != "" && crcBootKeyBinding(instance) == nil {
+		return r.continueLegacyCRCAgent(ctx, instance, pullSecretName)
+	}
 	log := logf.FromContext(ctx)
 	res := crcResult{
-		vmName: resources.VMName(instance.Name),
-		dvName: resources.DataVolumeName(instance.Name),
+		vmName: resources.CRCVMName(instance),
+		dvName: resources.CRCDiskName(instance),
 	}
 
 	src, err := r.resolveCRCDataVolumeSource(ctx, instance, bundleKeyDataKey)
@@ -179,20 +182,15 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		dv = boundCRCSource(instance, crcBootKeyBinding(instance)).dv
 	}
 
-	if err := r.ensureCRCDataVolume(ctx, dv); err != nil {
+	if _, err := r.ensureCRCObject(ctx, instance, dv); err != nil {
 		return res, err
 	}
 	vm := resources.BuildCRCVirtualMachine(instance, res.dvName)
-	existingVM := &kubevirtv1.VirtualMachine{}
-	if err := r.Get(ctx, types.NamespacedName{Name: vm.Name, Namespace: vm.Namespace}, existingVM); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, vm); err != nil && !apierrors.IsAlreadyExists(err) {
-			return res, fmt.Errorf("creating CRC VirtualMachine %s/%s: %w", vm.Namespace, vm.Name, err)
-		}
-		log.Info("created CRC VirtualMachine", "virtualMachine", vm.Name)
-		return res, nil // freshly created, definitely not ready yet
-	} else if err != nil {
-		return res, fmt.Errorf("getting CRC VirtualMachine %s/%s: %w", vm.Namespace, vm.Name, err)
+	obj, err := r.ensureCRCObject(ctx, instance, vm)
+	if err != nil {
+		return res, err
 	}
+	existingVM := obj.(*kubevirtv1.VirtualMachine)
 
 	if !existingVM.Status.Ready {
 		return res, nil
@@ -213,6 +211,9 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		log.Info("CRC VMI is not running yet, waiting", "virtualMachine", vm.Name, "phase", vmi.Status.Phase)
 		return res, nil
 	}
+	if err := r.verifyCRCResource(ctx, instance, vmi); err != nil {
+		return res, err
+	}
 	res.vmiUID = string(vmi.UID)
 
 	var vmIP string
@@ -231,6 +232,10 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 }
 
 func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string) (crcResult, error) {
+	return r.ensureCRCAgentBackingForJob(ctx, instance, res, sshSecretName, sshDataKey, pullSecretName, nil)
+}
+
+func (r *ClusterInstanceReconciler) ensureCRCAgentBackingForJob(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string, legacyJob *batchv1.Job) (crcResult, error) {
 	log := logf.FromContext(ctx)
 	vmIP := res.sshEndpoint
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
@@ -260,14 +265,13 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, i
 	if err := controllerutil.SetControllerReference(instance, job, r.Scheme); err != nil {
 		return res, fmt.Errorf("setting owner reference on crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
-	existingJob := &batchv1.Job{}
-	if err := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, existingJob); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-			return res, fmt.Errorf("creating crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
+	existingJob := legacyJob
+	if existingJob == nil {
+		obj, err := r.ensureCRCObject(ctx, instance, job)
+		if err != nil {
+			return res, err
 		}
-		log.Info("created crc-agent Job", "job", job.Name, "vmIP", vmIP)
-	} else if err != nil {
-		return res, fmt.Errorf("getting crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
+		existingJob = obj.(*batchv1.Job)
 	}
 	// A Job's Pod template is immutable. Leave Jobs from the shared-account
 	// deployment on that account; the legacy Role and binding remain installed.
@@ -309,18 +313,6 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, i
 	res.kubeconfig = kubeconfig
 	res.ocpVersion = ocpVersion
 	return res, nil
-}
-
-func (r *ClusterInstanceReconciler) ensureCRCDataVolume(ctx context.Context, dv *cdiv1beta1.DataVolume) error {
-	if err := r.Get(ctx, types.NamespacedName{Name: dv.Name, Namespace: dv.Namespace}, &cdiv1beta1.DataVolume{}); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, dv); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
-		}
-		logf.FromContext(ctx).Info("created CRC DataVolume", "dataVolume", dv.Name)
-	} else if err != nil {
-		return fmt.Errorf("getting CRC DataVolume %s/%s: %w", dv.Namespace, dv.Name, err)
-	}
-	return nil
 }
 
 // ensureCRCIdentity creates the credentials that stay stable while this
@@ -370,11 +362,18 @@ func (r *ClusterInstanceReconciler) ensureCRCIdentity(ctx context.Context, insta
 // reconcileReadyCRC verifies that the published kubeconfig still belongs to
 // the running VMI and can reach the guest API before preserving Ready.
 func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if err := r.recordCRCIdentity(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	// Keep the permissions available for recovery even when no new Job is needed.
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling CRC agent permissions: %w", err)
 	}
-	if instance.Spec.Template.CRCVersion != "" {
+	// A verified running legacy disk can continue health checks without a new
+	// disk/key binding. Recovery still requires a verified binding; never infer
+	// the boot key from a newly prepared shared bundle.
+	legacyWithoutKey := instance.Status.Provisioning != nil && instance.Status.Provisioning.Legacy && crcBootKeyBinding(instance) == nil
+	if instance.Spec.Template.CRCVersion != "" && !legacyWithoutKey {
 		binding := crcBootKeyBinding(instance)
 		if binding == nil {
 			return r.markCRCBootKeyUnavailable(ctx, instance, fmt.Errorf("CRC boot disk/key binding is missing; automatic recovery is unsafe"))
@@ -386,12 +385,15 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 		}
 	}
 	vmi := &kubevirtv1.VirtualMachineInstance{}
-	key := types.NamespacedName{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}
+	key := types.NamespacedName{Name: resources.CRCVMName(instance), Namespace: instance.Namespace}
 	if err := r.Get(ctx, key, vmi); err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.invalidateCRCReadiness(ctx, instance, "", "VMIUnavailable", "CRC VirtualMachineInstance is not running")
 		}
 		return ctrl.Result{}, fmt.Errorf("getting CRC VirtualMachineInstance %s/%s: %w", key.Namespace, key.Name, err)
+	}
+	if err := r.verifyCRCResource(ctx, instance, vmi); err != nil {
+		return ctrl.Result{}, err
 	}
 	if vmi.Status.Phase != kubevirtv1.Running {
 		return r.invalidateCRCReadiness(ctx, instance, string(vmi.UID), "VMIUnavailable", "CRC VirtualMachineInstance is not running")
@@ -429,6 +431,9 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 			return r.markReady(ctx, instance, ocpVersion, instance.Status.APIEndpoint, kubeconfig)
 		}
 		return ctrl.Result{}, fmt.Errorf("getting published kubeconfig secret %s/%s: %w", instance.Namespace, publishedName, err)
+	}
+	if err := r.verifyCRCResource(ctx, instance, published); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := checkCRCAPIReady(ctx, published.Data[resources.KubeconfigSecretKey]); err != nil {
 		return r.markCRCAPIUnavailable(ctx, instance, "GuestAPIUnavailable", fmt.Sprintf("guest API readiness check failed: %v", err))
@@ -471,12 +476,15 @@ func (r *ClusterInstanceReconciler) markCRCBootKeyUnavailable(ctx context.Contex
 // handoff can be reused. A changed identity invalidates that handoff first.
 func (r *ClusterInstanceReconciler) reconcileProvisioningCRCVMI(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (*ctrl.Result, error) {
 	vmi := &kubevirtv1.VirtualMachineInstance{}
-	key := types.NamespacedName{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}
+	key := types.NamespacedName{Name: resources.CRCVMName(instance), Namespace: instance.Namespace}
 	if err := r.Get(ctx, key, vmi); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("getting CRC VirtualMachineInstance %s/%s: %w", key.Namespace, key.Name, err)
+	}
+	if err := r.verifyCRCResource(ctx, instance, vmi); err != nil {
+		return nil, err
 	}
 
 	previousUID := ""
@@ -507,7 +515,7 @@ func crcVMIChanged(previousUID, currentUID string) bool {
 	return previousUID == "" || currentUID == "" || previousUID != currentUID
 }
 
-func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
+func checkGuestAPIReady(ctx context.Context, kubeconfig []byte) error {
 	if len(kubeconfig) == 0 {
 		return fmt.Errorf("kubeconfig is empty")
 	}
@@ -536,13 +544,18 @@ func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
 	return nil
 }
 
+func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
+	return checkGuestAPIReady(ctx, kubeconfig)
+}
+
 // invalidateCRCReadiness removes the one-shot handoff from a previous VMI so
 // the next reconcile creates a fresh crc-agent Job for the current VMI.
 func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, vmiUID, reason, message string) (ctrl.Result, error) {
 	previousStatus := instance.Status.DeepCopy()
 	if instance.Status.CRC != nil && instance.Status.CRC.VMIUID != "" {
 		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, instance.Status.CRC.VMIUID), Namespace: instance.Namespace}}
-		pending, err := r.deleteIfExists(ctx, job, "stale crc-agent Job")
+		foreground := metav1.DeletePropagationForeground
+		pending, err := r.deleteCRCObject(ctx, instance, job, "stale crc-agent Job", client.PropagationPolicy(foreground))
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -551,7 +564,7 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 		}
 	}
 	published := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace}}
-	pending, err := r.deleteIfExists(ctx, published, "published CRC kubeconfig secret")
+	pending, err := r.deleteCRCObject(ctx, instance, published, "published CRC kubeconfig secret")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -566,7 +579,6 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 		instance.Status.CRC.VMIUID = vmiUID
 	}
 	instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
-	instance.Status.APIEndpoint = ""
 	instance.Status.KubeconfigSecretRef = corev1.LocalObjectReference{}
 	apimeta.RemoveStatusCondition(&instance.Status.Conditions, conditionTypeCRCAgent)
 	apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
@@ -647,6 +659,9 @@ func (r *ClusterInstanceReconciler) checkCRCKubeconfigHandoff(ctx context.Contex
 		log.Info("ignoring raw kubeconfig handoff for a different CRC VMI", "secret", rawName)
 		return nil, "", nil
 	}
+	if err := r.verifyCRCResource(ctx, instance, raw); err != nil {
+		return nil, "", err
+	}
 	return kubeconfig, string(raw.Data[resources.OCPVersionSecretKey]), nil
 }
 
@@ -662,23 +677,24 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 	log := logf.FromContext(ctx)
 
 	svc := resources.BuildCRCAPIService(instance)
-	if err := r.Get(ctx, types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}, &corev1.Service{}); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, svc); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("creating CRC API Service %s/%s: %w", svc.Namespace, svc.Name, err)
-		}
-		log.Info("created CRC API Service", "service", svc.Name)
-	} else if err != nil {
-		return "", fmt.Errorf("getting CRC API Service %s/%s: %w", svc.Namespace, svc.Name, err)
+	if _, err := r.ensureCRCObject(ctx, instance, svc); err != nil {
+		return "", err
 	}
 
 	routeKey := types.NamespacedName{Name: resources.CRCAPIRouteName(instance.Name), Namespace: instance.Namespace}
 	existingRoute := &routev1.Route{}
 	if err := r.Get(ctx, routeKey, existingRoute); err == nil {
+		if _, err := r.ensureCRCObject(ctx, instance, existingRoute.DeepCopy()); err != nil {
+			return "", err
+		}
 		// Keep existing hosts, including hosts from the old naming rule.
 		if existingRoute.Spec.Host == "" {
 			return "", apiEndpointConflict("CRC API Route %s/%s has an empty host", routeKey.Namespace, routeKey.Name)
 		}
 		if err := r.ensureAPIHostnameAvailable(ctx, existingRoute.Spec.Host, routeKey); err != nil {
+			return "", err
+		}
+		if err := r.recordCRCAPIEndpoint(ctx, instance, existingRoute.Spec.Host); err != nil {
 			return "", err
 		}
 		return existingRoute.Spec.Host, nil
@@ -693,15 +709,16 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 	if err := r.ensureAPIHostnameAvailable(ctx, host, routeKey); err != nil {
 		return "", err
 	}
+	if err := r.recordCRCAPIEndpoint(ctx, instance, host); err != nil {
+		return "", err
+	}
 	route := resources.BuildCRCAPIRoute(instance, host, svc.Name)
-	if err := r.Create(ctx, route); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("creating CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
-		}
-		if err := r.Get(ctx, routeKey, existingRoute); err != nil {
-			return "", fmt.Errorf("getting concurrently created CRC API Route %s/%s: %w", route.Namespace, route.Name, err)
-		}
-		return existingRoute.Spec.Host, nil
+	obj, err := r.ensureCRCObject(ctx, instance, route)
+	if err != nil {
+		return "", err
+	}
+	if obj.(*routev1.Route).Spec.Host != host {
+		return "", apiEndpointConflict("CRC Route changed hostname during creation")
 	}
 	log.Info("created CRC API Route", "route", route.Name, "host", host)
 	return route.Spec.Host, nil
@@ -721,9 +738,15 @@ func (r *ClusterInstanceReconciler) crcAPIHostnameForNewRoute(ctx context.Contex
 		if err != nil {
 			return "", fmt.Errorf("validating CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
 		}
+		if instance.Status.APIEndpoint != "" && instance.Status.APIEndpoint != "https://"+hostname {
+			return "", apiEndpointConflict("CRC identity differs from recorded endpoint")
+		}
 		return hostname, nil
 	} else if !apierrors.IsNotFound(err) {
 		return "", fmt.Errorf("getting CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
+	}
+	if instance.Status.APIEndpoint != "" {
+		return apiEndpointHostname(instance.Status.APIEndpoint)
 	}
 
 	domain, err := r.mgmtIngressDomain(ctx)
@@ -735,6 +758,15 @@ func (r *ClusterInstanceReconciler) crcAPIHostnameForNewRoute(ctx context.Contex
 		return "", fmt.Errorf("building CRC API hostname: %w", err)
 	}
 	return host, nil
+}
+
+func (r *ClusterInstanceReconciler) recordCRCAPIEndpoint(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, hostname string) error {
+	if instance.Status.APIEndpoint != "" && instance.Status.APIEndpoint != "https://"+hostname {
+		return apiEndpointConflict("CRC Route differs from recorded endpoint")
+	}
+	previous := instance.Status.DeepCopy()
+	instance.Status.APIEndpoint = "https://" + hostname
+	return r.updateStatusIfChanged(ctx, instance, previous, "recording CRC API endpoint")
 }
 
 // mgmtIngressDomain resolves the management cluster's own ingress domain
@@ -761,9 +793,12 @@ func (r *ClusterInstanceReconciler) mgmtIngressDomain(ctx context.Context) (stri
 // through the normal creation path. See clusterinstance_controller.go's
 // Reconcile doc comment for the rationale.
 func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
+	if err := r.recordCRCIdentity(ctx, instance); err != nil {
+		return false, err
+	}
 	pending := false
 	deleteObject := func(obj client.Object, label string, opts ...client.DeleteOption) error {
-		objectPending, err := r.deleteIfExists(ctx, obj, label, opts...)
+		objectPending, err := r.deleteCRCObject(ctx, instance, obj, label, opts...)
 		pending = pending || objectPending
 		return err
 	}
@@ -773,18 +808,24 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	// from the API: a stale empty cache list cannot prove that no Job is
 	// still using the instance account and boot key.
 	jobs := &batchv1.JobList{}
-	if err := r.platformReader().List(ctx, jobs, client.InNamespace(instance.Namespace), client.MatchingLabels(resources.CommonLabels(instance))); err != nil {
+	if err := r.platformReader().List(ctx, jobs, client.InNamespace(instance.Namespace)); err != nil {
 		return false, fmt.Errorf("listing crc-agent Jobs: %w", err)
 	}
 	// Foreground deletion waits for Job pods to stop using the boot key.
 	foreground := metav1.DeletePropagationForeground
+	jobCount := 0
 	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if !metav1.IsControlledBy(job, instance) && (job.Labels[resources.LabelInstance] != instance.Name || job.Labels[resources.LabelManagedBy] != resources.ManagerName) {
+			continue
+		}
+		jobCount++
 		if err := deleteObject(&jobs.Items[i], "crc-agent Job", client.PropagationPolicy(foreground)); err != nil {
 			return false, err
 		}
 	}
 	// Do not remove the boot key while a Job pod can still be running.
-	if len(jobs.Items) > 0 {
+	if jobCount > 0 {
 		return true, nil
 	}
 	rbacPending, err := r.deleteCRCAgentRBAC(ctx, instance)
@@ -814,7 +855,7 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	pending = pending || vmCleanupPending
 
 	rawSecrets := &corev1.SecretList{}
-	if err := r.List(ctx, rawSecrets, client.InNamespace(instance.Namespace), client.MatchingLabels{
+	if err := r.platformReader().List(ctx, rawSecrets, client.InNamespace(instance.Namespace), client.MatchingLabels{
 		resources.LabelManagedBy: "crc-agent",
 		resources.LabelInstance:  instance.Name,
 	}); err != nil {
@@ -855,7 +896,7 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 // its VMI. It waits for the VMI and its launcher pod to disappear before it
 // deletes the root DataVolume. Each step is safe to repeat on a later reconcile.
 func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
-	vmKey := types.NamespacedName{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}
+	vmKey := types.NamespacedName{Name: resources.CRCVMName(instance), Namespace: instance.Namespace}
 	vm := &kubevirtv1.VirtualMachine{}
 	vmExists := true
 	if err := r.platformReader().Get(ctx, vmKey, vm); err != nil {
@@ -866,6 +907,11 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 		}
 	}
 
+	if vmExists {
+		if err := r.verifyCRCResource(ctx, instance, vm); err != nil {
+			return false, err
+		}
+	}
 	if vmExists && vm.DeletionTimestamp.IsZero() &&
 		(vm.Spec.RunStrategy == nil || *vm.Spec.RunStrategy != kubevirtv1.RunStrategyHalted || vm.Spec.Running != nil) {
 		halted := kubevirtv1.RunStrategyHalted
@@ -900,14 +946,14 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 	var err error
 	if vmExists {
 		vmForDelete := &kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: vmKey.Name, Namespace: vmKey.Namespace}}
-		vmPending, err = r.deleteIfExists(ctx, vmForDelete, "CRC VirtualMachine")
+		vmPending, err = r.deleteCRCObject(ctx, instance, vmForDelete, "CRC VirtualMachine")
 		if err != nil {
 			return false, err
 		}
 	}
 
 	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: vmKey.Name, Namespace: vmKey.Namespace}}
-	vmiPending, err := r.deleteIfExists(ctx, vmi, "CRC VirtualMachineInstance")
+	vmiPending, err := r.deleteCRCObject(ctx, instance, vmi, "CRC VirtualMachineInstance")
 	if err != nil {
 		return false, err
 	}
@@ -926,7 +972,7 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 	launcherPodPending := false
 	for i := range launcherPods.Items {
 		pod := &launcherPods.Items[i]
-		podPending, err := r.deleteIfExists(ctx, pod, "CRC virt-launcher pod")
+		podPending, err := r.deleteCRCObject(ctx, instance, pod, "CRC virt-launcher pod")
 		if err != nil {
 			return false, err
 		}
@@ -940,10 +986,10 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 	}
 
 	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
-		Name:      resources.DataVolumeName(instance.Name),
+		Name:      resources.CRCDiskName(instance),
 		Namespace: instance.Namespace,
 	}}
-	dvPending, err := r.deleteIfExists(ctx, dv, "CRC DataVolume")
+	dvPending, err := r.deleteCRCObject(ctx, instance, dv, "CRC DataVolume")
 	if err != nil {
 		return false, err
 	}
@@ -955,10 +1001,10 @@ func (r *ClusterInstanceReconciler) teardownCRCVMAndStorage(ctx context.Context,
 	// claim explicitly as well: the ClusterInstance finalizer must continue to
 	// hold pool capacity while storage cleanup lags behind DataVolume deletion.
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-		Name:      resources.DataVolumeName(instance.Name),
+		Name:      resources.CRCDiskName(instance),
 		Namespace: instance.Namespace,
 	}}
-	pvcPending, err := r.deleteIfExists(ctx, pvc, "CRC root disk PVC")
+	pvcPending, err := r.deleteCRCObject(ctx, instance, pvc, "CRC root disk PVC")
 	if err != nil {
 		return false, err
 	}

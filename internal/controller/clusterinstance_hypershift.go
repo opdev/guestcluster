@@ -43,13 +43,15 @@ import (
 // hypershiftResult carries the outcome of reconciling a topology=hcp
 // instance's backing objects.
 type hypershiftResult struct {
-	ready             bool
-	apiRoutePending   bool
-	ocpVersion        string
-	apiEndpoint       string
-	kubeconfig        []byte
-	hostedClusterName string
-	nodePoolNames     []string
+	ready              bool
+	apiRoutePending    bool
+	apiEndpointPending bool
+	apiEndpointMessage string
+	ocpVersion         string
+	apiEndpoint        string
+	kubeconfig         []byte
+	hostedClusterName  string
+	nodePoolNames      []string
 }
 
 // managementNodeAddress returns the InternalIP of a Ready, schedulable node
@@ -434,6 +436,28 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 	if !routeIsAdmitted(apiRoute) {
 		return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
 	}
+	if r.APIReader != nil && instance.Status.KubeconfigSecretRef.Name != "" {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Status.KubeconfigSecretRef.Name}, secret); err != nil {
+			return ctrl.Result{}, fmt.Errorf("getting published HCP kubeconfig %s/%s for readiness: %w", instance.Namespace, instance.Status.KubeconfigSecretRef.Name, err)
+		}
+		if err := r.verifyHCPResource(ctx, instance, secret); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := checkGuestAPIReady(ctx, secret.Data[resources.KubeconfigSecretKey]); err != nil {
+			previous := instance.Status.DeepCopy()
+			instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: "APIEndpointUnavailable",
+				Message:            fmt.Sprintf("waiting for external HCP API endpoint %s: %v", instance.Status.APIEndpoint, err),
+				ObservedGeneration: instance.Generation,
+			})
+			if err := r.updateStatusIfChanged(ctx, instance, previous, "recording unavailable HCP API endpoint"); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		}
+	}
 
 	if instance.Status.Phase != brokerv1alpha1.PhaseReady {
 		instance.Status.Phase = brokerv1alpha1.PhaseReady
@@ -648,6 +672,13 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	rewrittenKubeconfig, err := resources.RewriteKubeconfigServer(kubeconfig, apiEndpoint, servingCertPEM)
 	if err != nil {
 		return res, fmt.Errorf("rewriting admin kubeconfig server for %s/%s: %w", namespace, existingHC.Status.KubeConfig.Name, err)
+	}
+	if r.APIReader != nil {
+		if err := checkGuestAPIReady(ctx, rewrittenKubeconfig); err != nil {
+			res.apiEndpointPending = true
+			res.apiEndpointMessage = fmt.Sprintf("waiting for external HCP API endpoint %s: %v", apiEndpoint, err)
+			return res, nil
+		}
 	}
 
 	res.ready = true

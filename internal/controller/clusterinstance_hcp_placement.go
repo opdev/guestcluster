@@ -204,9 +204,25 @@ func (r *ClusterInstanceReconciler) setHCPResourceOwner(instance *brokerv1alpha1
 	obj.SetLabels(resources.APIEndpointLabels(instance))
 	if obj.GetNamespace() == instance.Namespace {
 		if _, nodePool := obj.(*hyperv1beta1.NodePool); nodePool {
-			// HyperShift owns the NodePool controller reference. Keep the
-			// instance reference as an additional, non-controller owner.
-			return controllerutil.SetOwnerReference(instance, obj, r.Scheme)
+			// HyperShift owns the NodePool controller reference. Keep it, and the
+			// instance reference, non-blocking. The manager can create HostedClusters
+			// but does not need update permission on HostedCluster finalizers just
+			// to create the dependent NodePool.
+			if err := controllerutil.SetOwnerReference(instance, obj, r.Scheme); err != nil {
+				return err
+			}
+			_, hostedClusterName := hcpLocation(instance)
+			owners := obj.GetOwnerReferences()
+			for i := range owners {
+				owner := owners[i]
+				if (owner.Kind == clusterInstanceKind && owner.Name == instance.Name && owner.UID == instance.UID) ||
+					(owner.Kind == "HostedCluster" && owner.Name == hostedClusterName) {
+					block := false
+					owners[i].BlockOwnerDeletion = &block
+				}
+			}
+			obj.SetOwnerReferences(owners)
+			return nil
 		}
 		return controllerutil.SetControllerReference(instance, obj, r.Scheme)
 	}
@@ -225,15 +241,31 @@ func (r *ClusterInstanceReconciler) verifyExistingHCPResource(ctx context.Contex
 
 func (r *ClusterInstanceReconciler) verifyHCPResource(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, obj client.Object) error {
 	for _, owner := range obj.GetOwnerReferences() {
-		if owner.Kind != "ClusterInstance" {
+		if owner.Kind != clusterInstanceKind {
 			continue
 		}
 		if obj.GetNamespace() == instance.Namespace && owner.Name == instance.Name && owner.UID == instance.UID {
 			if np, ok := obj.(*hyperv1beta1.NodePool); ok {
 				_, name := hcpLocation(instance)
-				controller := metav1.GetControllerOf(np)
-				if np.Spec.ClusterName != name || controller == nil || controller.Kind != "HostedCluster" || controller.Name != name {
+				var hostedClusterOwner *metav1.OwnerReference
+				for i := range np.OwnerReferences {
+					ref := &np.OwnerReferences[i]
+					if ref.Kind == "HostedCluster" && ref.Name == name && ref.UID != "" {
+						hostedClusterOwner = ref
+						break
+					}
+				}
+				if np.Spec.ClusterName != name || hostedClusterOwner == nil {
 					return apiEndpointConflict("NodePool %s/%s does not belong to HostedCluster %s", np.Namespace, np.Name, name)
+				}
+				hcpNamespace, _ := hcpLocation(instance)
+				hostedCluster := &hyperv1beta1.HostedCluster{}
+				if err := r.platformReader().Get(ctx, client.ObjectKey{Namespace: hcpNamespace, Name: name}, hostedCluster); err == nil {
+					if hostedClusterOwner.UID != hostedCluster.UID {
+						return apiEndpointConflict("NodePool %s/%s has a different HostedCluster owner UID", np.Namespace, np.Name)
+					}
+				} else if !apierrors.IsNotFound(err) {
+					return err
 				}
 			}
 			return nil

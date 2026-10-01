@@ -56,6 +56,7 @@ func TestReconcileDeleteCRCWaitsForVMIAndLauncherPod(t *testing.T) {
 		Name:      resources.DataVolumeName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
+	ownCRCFixtures(instance, vm, vmi, launcherPod, dv)
 	c := newTeardownFakeClient(t, instance, vm, vmi, launcherPod, dv)
 	c.holdVMIDeletes = true
 	c.holdPodDeletes = true
@@ -151,6 +152,7 @@ func TestReconcileDeleteWaitsForAlreadyTerminatingVMI(t *testing.T) {
 		Name:      resources.DataVolumeName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
+	ownCRCFixtures(instance, vm, vmi, dv)
 	c := newTeardownFakeClient(t, instance, vm, vmi, dv)
 	c.holdVMIDeletes = true
 	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
@@ -175,6 +177,7 @@ func TestReconcileDeleteCRCWaitsForRootDiskPVC(t *testing.T) {
 		Namespace:  instance.Namespace,
 		Finalizers: []string{"test.example.io/pvc-cleanup"},
 	}}
+	ownCRCFixtures(instance, pvc)
 	c := newTeardownFakeClient(t, instance, pvc)
 	c.holdPVCDeletes = true
 	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
@@ -229,6 +232,7 @@ func TestReconcileDeleteReportsBlockedVMICleanupTimeout(t *testing.T) {
 		Name:      resources.VMName(instance.Name),
 		Namespace: instance.Namespace,
 	}}
+	ownCRCFixtures(instance, vm, vmi)
 	c := newTeardownFakeClient(t, instance, vm, vmi)
 	c.holdVMIDeletes = true
 	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
@@ -385,6 +389,7 @@ func TestReconcileDeleteWaitsForLauncherPodMissingFromCache(t *testing.T) {
 					Name: resources.DataVolumeName(instance.Name), Namespace: instance.Namespace,
 				}}
 				objects = append(objects, dv)
+				ownCRCFixtures(instance, dv, pod)
 			}
 			c := newTeardownFakeClient(t, objects...)
 			c.hidePodsFromList = true
@@ -457,7 +462,7 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 			otherPVC := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, "other-cluster"),
 			}}
-			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC)
+			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC, enabledTestNamespace(pool.Namespace))
 			c.hidePVCsFromList = true
 			for range 2 {
 				// New reconcilers use only persisted state after a restart.

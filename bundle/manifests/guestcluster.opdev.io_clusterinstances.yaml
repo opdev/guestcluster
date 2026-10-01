@@ -42,6 +42,10 @@ spec:
           ClusterInstance is the Schema for the clusterinstances API. It represents a single
           concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
           this operator.
+          New backing resources use the instance namespace. Provisioning requires the
+          namespace label guestcluster.opdev.io/enabled="true" until authorization is
+          recorded in status.provisioning. Authorized work, maintenance, and cleanup
+          continue after label removal. Namespace termination stops new allocations.
         properties:
           apiVersion:
             description: |-
@@ -86,14 +90,13 @@ spec:
                 properties:
                   bundleSSHKeyRef:
                     description: |-
-                      BundleSSHKeyRef references a Secret in the ClusterInstance's namespace containing the
+                      BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the
                       CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official
                       .crcbundle, used to reach the booted VM as user "core"), under a data key named
                       "id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,
                       the operator derives the SSH key automatically from the referenced CRCBundle
                       instead, and this field is ignored. When CRCVersion is unset, this field is
-                      required for topology=crc: the operator copies this key to an instance-owned,
-                      namespace-local Secret before the crc-agent Job uses it to SSH into the
+                      required for topology=crc: the crc-agent Job uses this key to SSH into the
                       freshly booted CRC VM and run the post-boot fixups natively (start kubelet,
                       approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the
                       kubeconfig server to the externally-routable API Route hostname the
@@ -154,9 +157,11 @@ spec:
                     type: string
                   hcpWorkerSSHKeyRef:
                     description: |-
-                      HCPWorkerSSHKeyRef optionally references a Secret (in the operator's namespace)
-                      containing an SSH public key, under a data key named "id_rsa.pub", to inject as
-                      an authorized key for the "core" user on every hcp NodePool worker (via
+                      HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace
+                      containing an SSH public key under the data key "id_rsa.pub". New HCP
+                      HostedClusters reference this Secret directly; the operator does not own
+                      or delete it. Legacy HostedClusters in "clusters" use a managed copy.
+                      The key is injected for the "core" user on every HCP NodePool worker (via
                       HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
                       generation). This field is only a debugging convenience (e.g. to inspect a
                       worker that is stuck before ever registering as a Node) and has no effect on
@@ -217,8 +222,8 @@ spec:
                       is optional. When unset, the operator uses the "pull-secret" Secret in the
                       ClusterInstance's namespace. An administrator or pool creator must provide that
                       Secret, for example by copying the management cluster's pull secret into the
-                      pool namespace. For topology=hcp, the Secret is copied to the HostedCluster's
-                      namespace under a per-instance name before the HostedCluster uses it. Set this
+                      pool namespace. New HCP HostedClusters reference this local Secret directly.
+                      Legacy HCP instances in another namespace use a per-instance copy. Set this
                       field explicitly to use a different credential (e.g. one scoped to a
                       disconnected mirror).
                     properties:
@@ -347,50 +352,61 @@ spec:
                 description: CRC holds backing-object references for topology=crc
                   instances.
                 properties:
-                  crcBundleSHA256:
+                  bootKey:
                     description: |-
-                      CRCBundleSHA256 records the source archive checksum for turnkey instances.
-                      The controller uses it to avoid cloning a changed disk onto an instance
-                      whose SSH key is pinned to an earlier bundle.
-                    type: string
+                      BootKey records the golden disk and private key used for this instance.
+                      It is set before the DataVolume is created and stays fixed for its lifetime.
+                    properties:
+                      bundleSHA256:
+                        type: string
+                      bundleUID:
+                        type: string
+                      keySHA256:
+                        type: string
+                      pvcName:
+                        type: string
+                      pvcNamespace:
+                        type: string
+                      pvcUID:
+                        type: string
+                      secretName:
+                        type: string
+                      secretNamespace:
+                        type: string
+                      secretUID:
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - bundleSHA256
+                    - bundleUID
+                    - keySHA256
+                    - pvcName
+                    - pvcNamespace
+                    - pvcUID
+                    - secretName
+                    - secretNamespace
+                    - secretUID
+                    type: object
                   dataVolumeName:
                     description: DataVolumeName is the CDI DataVolume providing the
                       VM's root disk.
                     type: string
-                  manualDiskSourceURL:
-                    description: |-
-                      ManualDiskSourceURL records the manual releaseImage URL paired with the
-                      boot key before disk creation. A missing disk can only be imported from
-                      this same URL. The administrator must keep the disk content at this URL
-                      unchanged for the instance's lifetime.
+                  dataVolumeUID:
                     type: string
                   sshEndpoint:
                     description: |-
                       SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
                       post-boot fixups and kubeconfig extraction.
                     type: string
-                  sshKeySHA256:
-                    description: |-
-                      SSHKeySHA256 is the SHA-256 digest of the copied private key. The digest
-                      lets the controller safely restore a deleted copy without accepting a
-                      rotated source key that does not match the VM's boot disk.
-                    type: string
-                  sshKeySourceDataKey:
-                    description: SSHKeySourceDataKey is the source Secret data key
-                      copied to id_ecdsa.
-                    type: string
-                  sshKeySourceName:
-                    description: SSHKeySourceName is the name of the source Secret
-                      used for this instance.
-                    type: string
-                  sshKeySourceNamespace:
-                    description: |-
-                      SSHKeySourceNamespace is the namespace of the source Secret used for this
-                      instance's immutable, namespace-local boot-key copy.
-                    type: string
                   vmName:
                     description: VMName is the name of the KubeVirt VirtualMachine
                       running the CRC/SNO bundle.
+                    type: string
+                  vmUID:
+                    description: |-
+                      VMUID and DataVolumeUID retain parent identity while dependent compute and
+                      storage are deleted. Names alone cannot identify those dependents safely.
                     type: string
                   vmiUID:
                     description: |-
@@ -408,8 +424,8 @@ spec:
                     type: string
                   hostedClusterNamespace:
                     description: |-
-                      HostedClusterNamespace is the namespace holding the HostedCluster (conventionally
-                      "clusters").
+                      HostedClusterNamespace records the namespace holding the HostedCluster.
+                      New instances use their source namespace. Legacy instances can use "clusters".
                     type: string
                   nodePoolNames:
                     description: NodePoolNames lists the NodePool(s) backing this
@@ -475,6 +491,25 @@ spec:
                 - Failed
                 - Terminating
                 type: string
+              provisioning:
+                description: |-
+                  Provisioning records the durable authorization to start backing-resource
+                  creation. Removing the namespace opt-in label does not revoke this decision.
+                  An absent value does not prove that a legacy instance has not started;
+                  the controller verifies existing backing resources before migration.
+                properties:
+                  legacy:
+                    description: |-
+                      Legacy means existing backing-resource identity was verified during upgrade.
+                      It permits verified adoption of resources from older controller versions.
+                    type: boolean
+                  startedAt:
+                    description: StartedAt is when the controller authorized provisioning.
+                    format: date-time
+                    type: string
+                required:
+                - startedAt
+                type: object
               topology:
                 description: |-
                   Topology echoes Spec.Type once the instance is Ready, for convenient consumption

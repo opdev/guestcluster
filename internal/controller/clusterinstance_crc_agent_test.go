@@ -45,7 +45,7 @@ const (
 	crcTestAgentServiceAccount = "agent-account"
 	crcTestAgentPodName        = "agent-pod"
 	crcTestJobNameLabel        = "job-name"
-	crcTestInstanceKind        = "ClusterInstance"
+	crcTestInstanceKind        = clusterInstanceKind
 )
 
 func agentDiagnosticFixture() (*brokerv1alpha1.ClusterInstance, *batchv1.Job, []client.Object) {
@@ -191,6 +191,12 @@ func TestReconcileCRCAgentPrerequisiteClearsBlockedStatus(t *testing.T) {
 		&configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}},
 	)
 	objects[2].(*corev1.Secret).Data = map[string][]byte{resources.PullSecretDataKey: []byte("pull")}
+	for _, obj := range objects {
+		switch obj.(type) {
+		case *kubevirtv1.VirtualMachine, *kubevirtv1.VirtualMachineInstance:
+			ownCRCFixtures(instance, obj)
+		}
+	}
 	c := newCRCRecoveryFakeClient(t, objects...)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	assertReason := func(want string) {
@@ -245,6 +251,7 @@ current-context: guest
 `, server.URL)),
 		},
 	}
+	ownCRCFixtures(instance, raw)
 	if err := c.Create(ctx, raw); err != nil {
 		t.Fatal(err)
 	}

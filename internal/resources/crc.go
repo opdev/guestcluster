@@ -67,9 +67,10 @@ func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) *cdiv1beta1.Da
 
 	return &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DataVolumeName(instance.Name),
-			Namespace: instance.Namespace,
-			Labels:    CommonLabels(instance),
+			Name:            CRCDiskName(instance),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          CommonLabels(instance),
 		},
 		Spec: cdiv1beta1.DataVolumeSpec{
 			Source: &cdiv1beta1.DataVolumeSource{
@@ -119,9 +120,10 @@ func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bund
 
 	return &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DataVolumeName(instance.Name),
-			Namespace: instance.Namespace,
-			Labels:    CommonLabels(instance),
+			Name:            CRCDiskName(instance),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          CommonLabels(instance),
 		},
 		Spec: cdiv1beta1.DataVolumeSpec{
 			Source: &cdiv1beta1.DataVolumeSource{
@@ -153,9 +155,10 @@ func BuildCRCVirtualMachine(instance *brokerv1alpha1.ClusterInstance, dvName str
 
 	return &kubevirtv1.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      VMName(instance.Name),
-			Namespace: instance.Namespace,
-			Labels:    labels,
+			Name:            CRCVMName(instance),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          labels,
 		},
 		Spec: kubevirtv1.VirtualMachineSpec{
 			RunStrategy: &runStrategy,
@@ -222,12 +225,13 @@ const vmNameLabel = "vm.kubevirt.io/name"
 func BuildCRCAPIService(instance *brokerv1alpha1.ClusterInstance) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      CRCAPIServiceName(instance.Name),
-			Namespace: instance.Namespace,
-			Labels:    CommonLabels(instance),
+			Name:            CRCAPIServiceName(instance.Name),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          CommonLabels(instance),
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{vmNameLabel: VMName(instance.Name)},
+			Selector: map[string]string{vmNameLabel: CRCVMName(instance)},
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "api",
@@ -251,9 +255,10 @@ func BuildCRCAPIRoute(instance *brokerv1alpha1.ClusterInstance, host, serviceNam
 	weight := int32(100)
 	return &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      CRCAPIRouteName(instance.Name),
-			Namespace: instance.Namespace,
-			Labels:    APIEndpointLabels(instance),
+			Name:            CRCAPIRouteName(instance.Name),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          APIEndpointLabels(instance),
 		},
 		Spec: routev1.RouteSpec{
 			Host: host,

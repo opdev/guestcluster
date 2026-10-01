@@ -73,17 +73,17 @@ metadata:
           },
           "spec": {
             "maxSize": 4,
-            "minSize": 0,
+            "minSize": 1,
             "template": {
               "cores": 4,
-              "crcVersion": "4.22.14",
+              "crcVersion": "4.22.7",
               "memory": "16Gi",
-              "ocpVersion": "4.22.14",
+              "ocpVersion": "4.22.7",
               "rootVolumeSize": "80Gi",
               "storageClassName": ""
             },
             "type": "crc",
-            "warmSpares": 1
+            "warmSpares": 2
           }
         },
         {
@@ -113,7 +113,7 @@ metadata:
         }
       ]
     capabilities: Basic Install
-    createdAt: "2026-09-25T15:32:17Z"
+    createdAt: "2026-09-29T17:44:44Z"
     operators.operatorframework.io/builder: operator-sdk-v1.42.3
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
   name: guestcluster-operator.v0.0.1
@@ -126,6 +126,10 @@ spec:
         ClusterInstance is the Schema for the clusterinstances API. It represents a single
         concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
         this operator.
+        New backing resources use the instance namespace. Provisioning requires the
+        namespace label guestcluster.opdev.io/enabled="true" until authorization is
+        recorded in status.provisioning. Authorized work, maintenance, and cleanup
+        continue after label removal. Namespace termination stops new allocations.
       displayName: Cluster Instance
       kind: ClusterInstance
       name: clusterinstances.guestcluster.opdev.io
@@ -142,6 +146,10 @@ spec:
         ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
         guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
         ClusterLease objects.
+        The pool, its instances, inputs, and leases share one source namespace. New
+        provisioning and pool-triggered CRCBundle preparation require namespace label
+        guestcluster.opdev.io/enabled="true". Existing capacity can still be leased
+        after opt-out. The label does not control direct CRCBundle administration.
       displayName: Cluster Pool
       kind: ClusterPool
       name: clusterpools.guestcluster.opdev.io
@@ -163,18 +171,10 @@ spec:
           resources:
           - configmaps
           - nodes
-          - serviceaccounts
           verbs:
           - get
           - list
           - watch
-        - apiGroups:
-          - ""
-          resources:
-          - serviceaccounts
-          verbs:
-          - create
-          - delete
         - apiGroups:
           - ""
           resources:
@@ -209,6 +209,16 @@ spec:
           resources:
           - pods
           verbs:
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - serviceaccounts
+          verbs:
+          - create
           - delete
           - get
           - list
@@ -419,7 +429,7 @@ spec:
                 - /manager
                 env:
                 - name: CRC_AGENT_IMAGE
-                  value: opdev.io/guestcluster-operator-crc-agent:latest
+                  value: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-crc-agent:ns58-20260929
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -430,7 +440,7 @@ spec:
                   value: guestcluster-operator-crc-agent
                 - name: CRC_AGENT_CLUSTER_ROLE
                   value: guestcluster-operator-crc-agent-instance-role
-                image: controller:latest
+                image: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-controller:ns58-20260929-v6
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -525,6 +535,7 @@ spec:
     name: Provider Name
     url: https://your.domain
   relatedImages:
-  - image: opdev.io/guestcluster-operator-crc-agent:latest
+  - image: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-crc-agent:ns58-20260929
     name: crc-agent
+  replaces: guestcluster-operator.v0.0.0
   version: 0.0.1

@@ -99,6 +99,20 @@ func TestCRCAPIHostnameIsUniqueAndSharedAcrossResources(t *testing.T) {
 	}
 }
 
+func TestEnsureCRCAPIRouteUsesRecordedEndpointWithoutIdentity(t *testing.T) {
+	ctx := context.Background()
+	instance := &brokerv1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "stored-endpoint", Namespace: crcHostnameTestNamespace, UID: crcTestInstanceUID},
+		Status:     brokerv1alpha1.ClusterInstanceStatus{APIEndpoint: "https://api.stored.example.test"},
+	}
+	c := newCRCRecoveryFakeClient(t, instance)
+	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+	hostname, err := r.ensureCRCAPIRoute(ctx, instance)
+	if err != nil || "https://"+hostname != instance.Status.APIEndpoint {
+		t.Fatalf("recorded endpoint not restored: %q %v", hostname, err)
+	}
+}
+
 func TestEnsureCRCAPIRouteKeepsExistingHostname(t *testing.T) {
 	ctx := context.Background()
 	instance := &brokerv1alpha1.ClusterInstance{

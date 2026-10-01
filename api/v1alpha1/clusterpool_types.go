@@ -205,6 +205,8 @@ type ClusterPoolSpec struct {
 	// change the total count, so MinSize cannot race with lease binding. The
 	// default value 0 allows the pool to shrink to zero when no leases need an
 	// instance and WarmSpares is also 0. MaxSize still applies.
+	// New capacity requires guestcluster.opdev.io/enabled="true" on the source
+	// namespace. A disabled or terminating namespace cannot allocate instances.
 	// +optional
 	// +kubebuilder:default=0
 	MinSize int32 `json:"minSize,omitempty"`
@@ -241,6 +243,7 @@ type ClusterPoolStatus struct {
 	LeasedInstances int32 `json:"leasedInstances,omitempty"`
 
 	// Conditions represent the latest available observations of the pool's state.
+	// ProvisioningAllowed reports namespace opt-in independently of existing capacity.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -264,6 +267,10 @@ type ClusterPoolStatus struct {
 // ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
 // guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
 // ClusterLease objects.
+// The pool, its instances, inputs, and leases share one source namespace. New
+// provisioning and pool-triggered CRCBundle preparation require namespace label
+// guestcluster.opdev.io/enabled="true". Existing capacity can still be leased
+// after opt-out. The label does not control direct CRCBundle administration.
 type ClusterPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

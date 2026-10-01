@@ -133,8 +133,20 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("getting ClusterPool: %w", err)
 	}
 	previousStatus := pool.Status.DeepCopy()
+	if !pool.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	policy, err := readNamespacePolicy(ctx, reader, pool.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	apimeta.SetStatusCondition(&pool.Status.Conditions, policy.condition(pool.Generation))
 
-	if pool.Spec.Type == brokerv1alpha1.TopologyCRC && pool.Spec.Template.CRCVersion != "" {
+	if policy.enabled && pool.Spec.Type == brokerv1alpha1.TopologyCRC && pool.Spec.Template.CRCVersion != "" {
 		if err := r.ensureCRCBundle(ctx, pool); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensuring CRCBundle for pool %s: %w", pool.Name, err)
 		}
@@ -207,6 +219,11 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// carries it. See capacityCondition's doc for the three cases it
 	// distinguishes.
 	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand))
+	if !policy.enabled {
+		// Keep capacity observations current without replacing or trimming
+		// existing clusters as a side effect of namespace opt-out.
+		return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
+	}
 
 	if need > 0 && room > 0 {
 		log.Info("creating ClusterInstance to satisfy pool capacity",
@@ -663,6 +680,9 @@ func (r *ClusterPoolReconciler) poolForLease(_ context.Context, obj client.Objec
 func (r *ClusterPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&brokerv1alpha1.ClusterPool{}).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			return namespaceRequests(ctx, r.Client, obj, true)
+		})).
 		Owns(&brokerv1alpha1.ClusterInstance{}).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.poolForLease)).
 		Named("clusterpool").

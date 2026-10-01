@@ -33,6 +33,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -303,6 +304,12 @@ func createHCPWithSelectedEndpoint(t *testing.T, c client.Client, r *ClusterInst
 	if err := c.Get(ctx, hcKey, hc); err != nil {
 		t.Fatalf("getting created HostedCluster: %v", err)
 	}
+	if hc.UID == "" {
+		hc.UID = types.UID("hosted-cluster-" + instance.Namespace + "-" + instance.Name)
+		if err := c.Update(ctx, hc); err != nil {
+			t.Fatalf("recording fake HostedCluster UID: %v", err)
+		}
+	}
 	if namedCertHostname(hc) != hostname {
 		t.Fatalf("HostedCluster named certificate hostname = %q, want %q", namedCertHostname(hc), hostname)
 	}
@@ -428,6 +435,7 @@ func TestReadyHCPRouteDeletionTriggersRecovery(t *testing.T) {
 	instance := hcpEndpointTestInstance("hcp-route-watch", "tenant-one")
 	instance.Finalizers = []string{instanceFinalizer}
 	instance.Status.Phase = brokerv1alpha1.PhaseReady
+	instance.Status.Provisioning = testProvisioningAuthorization()
 	instance.Status.APIEndpoint = "https://" + resources.APIServerHostname(instance.Name, "apps.legacy.test")
 	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
 		HostedClusterName: resources.HostedClusterName(instance.Name), HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
@@ -458,7 +466,7 @@ func TestReadyHCPRouteDeletionTriggersRecovery(t *testing.T) {
 		Host:       hostname,
 		Conditions: []routev1.RouteIngressCondition{{Type: routev1.RouteAdmitted, Status: corev1.ConditionTrue}},
 	}}
-	c := newHyperShiftFakeClient(t, instance, certSecret, hc, route)
+	c := newHyperShiftFakeClient(t, instance, certSecret, hc, route, enabledTestNamespace(instance.Namespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
 	// Legacy Routes do not carry the source namespace label. They must still

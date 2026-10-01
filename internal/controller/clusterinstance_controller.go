@@ -60,6 +60,7 @@ const (
 	conditionTypeGuestAPIReachable = "GuestAPIReachable"
 	conditionTypeTerminating       = "Terminating"
 	conditionTypeCRCAgent          = "CRCAgent"
+	clusterInstanceKind            = "ClusterInstance"
 )
 
 // ClusterInstanceReconciler reconciles a ClusterInstance object
@@ -160,6 +161,13 @@ func (r *ClusterInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// The Update call above already triggers a new reconcile via the
 		// watch, so no explicit requeue is needed here.
 		return ctrl.Result{}, nil
+	}
+
+	if result, err := r.gateNamespaceProvisioning(ctx, instance); result != nil || err != nil {
+		if result == nil {
+			return ctrl.Result{}, err
+		}
+		return *result, err
 	}
 
 	if instance.Status.Phase != brokerv1alpha1.PhaseFailed &&
@@ -292,6 +300,9 @@ func (r *ClusterInstanceReconciler) reconcileLeaseRefProjection(ctx context.Cont
 }
 
 func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if err := r.recordCRCIdentity(ctx, instance); err != nil {
+		return r.markFailedWithReason(ctx, instance, "ResourceOwnershipConflict", err)
+	}
 	previousStatus := instance.Status.DeepCopy()
 	if result, err := r.reconcileProvisioningCRCVMI(ctx, instance); result != nil || err != nil {
 		if result == nil {
@@ -334,14 +345,10 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 		return r.markFailed(ctx, instance, err)
 	}
 
-	bootKey := crcBootKeyBinding(instance)
-	instance.Status.CRC = &brokerv1alpha1.CRCBackingStatus{
-		VMName:         res.vmName,
-		DataVolumeName: res.dvName,
-		SSHEndpoint:    res.sshEndpoint,
-		VMIUID:         res.vmiUID,
-		BootKey:        bootKey,
-	}
+	instance.Status.CRC.VMName = res.vmName
+	instance.Status.CRC.DataVolumeName = res.dvName
+	instance.Status.CRC.SSHEndpoint = res.sshEndpoint
+	instance.Status.CRC.VMIUID = res.vmiUID
 
 	if !res.ready {
 		instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
@@ -420,6 +427,11 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 				Message:            fmt.Sprintf("waiting for the API Route for endpoint %q to be admitted", instance.Status.APIEndpoint),
 				ObservedGeneration: instance.Generation,
 			})
+		} else if res.apiEndpointPending {
+			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type: conditionTypeReady, Status: metav1.ConditionFalse, Reason: "APIEndpointUnavailable",
+				Message: res.apiEndpointMessage, ObservedGeneration: instance.Generation,
+			})
 		}
 		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating status while provisioning HyperShift"); err != nil {
 			return ctrl.Result{}, err
@@ -463,11 +475,11 @@ func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *bro
 
 	// changed also covers a missing owner reference, so secrets created
 	// before owner-reference support was added still get backfilled once.
-	verifyKubeconfig := func(existing *corev1.Secret) error { return nil }
+	verifyKubeconfig := func(existing *corev1.Secret) error { return r.verifyCRCResource(ctx, instance, existing) }
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
 		verifyKubeconfig = func(existing *corev1.Secret) error {
 			for _, owner := range existing.OwnerReferences {
-				if owner.Kind == "ClusterInstance" && owner.Name == instance.Name && owner.UID == instance.UID {
+				if owner.Kind == clusterInstanceKind && owner.Name == instance.Name && owner.UID == instance.UID {
 					return nil
 				}
 			}
@@ -801,20 +813,36 @@ func (r *ClusterInstanceReconciler) instanceForLease(_ context.Context, obj clie
 // instanceForVMI maps the deterministically named CRC VMI to its
 // ClusterInstance. This lets the controller recover as soon as KubeVirt
 // replaces a VMI, instead of waiting for an unrelated instance update.
-func (r *ClusterInstanceReconciler) instanceForVMI(_ context.Context, obj client.Object) []reconcile.Request {
+func (r *ClusterInstanceReconciler) instanceForVMI(ctx context.Context, obj client.Object) []reconcile.Request {
 	vmi, ok := obj.(*kubevirtv1.VirtualMachineInstance)
 	if !ok {
 		return nil
 	}
-	return []reconcile.Request{{
-		NamespacedName: client.ObjectKey{Namespace: vmi.Namespace, Name: vmi.Name},
-	}}
+	name := vmi.Labels[resources.LabelInstance]
+	if name != "" {
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: vmi.Namespace, Name: name}}}
+	}
+	instances := &brokerv1alpha1.ClusterInstanceList{}
+	if err := r.List(ctx, instances, client.InNamespace(vmi.Namespace)); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range instances.Items {
+		instance := &instances.Items[i]
+		if instance.Spec.Type == brokerv1alpha1.TopologyCRC && resources.CRCVMName(instance) == vmi.Name {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)})
+		}
+	}
+	return requests
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&brokerv1alpha1.ClusterInstance{}).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			return namespaceRequests(ctx, r.Client, obj, false)
+		})).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.instanceForLease)).
 		Watches(&kubevirtv1.VirtualMachineInstance{}, handler.EnqueueRequestsFromMapFunc(r.instanceForVMI)).
 		Watches(&routev1.Route{}, handler.EnqueueRequestsFromMapFunc(r.instanceForRoute)).
