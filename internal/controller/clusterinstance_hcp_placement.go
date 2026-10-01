@@ -229,16 +229,6 @@ func (r *ClusterInstanceReconciler) setHCPResourceOwner(instance *brokerv1alpha1
 	return nil
 }
 
-func (r *ClusterInstanceReconciler) verifyExistingHCPResource(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, obj client.Object) error {
-	existing := obj.DeepCopyObject().(client.Object)
-	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing); apierrors.IsNotFound(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return r.verifyHCPResource(ctx, instance, existing)
-}
-
 func (r *ClusterInstanceReconciler) verifyHCPResource(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, obj client.Object) error {
 	for _, owner := range obj.GetOwnerReferences() {
 		if owner.Kind != clusterInstanceKind {
