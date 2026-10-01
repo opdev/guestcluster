@@ -23,7 +23,7 @@ operator recycles the underlying compute. The next job gets a clean slate.
 
 ## Architecture
 
-The operator has one binary, two controllers, and three CRDs. It also has
+The operator has one manager binary, four controllers, and four CRDs. It also has
 a small, out-of-band crc-agent process:
 
 ```
@@ -75,7 +75,12 @@ CI  ── apply ──▶ │   ClusterLease   │ ◀────────�
 | `ClusterInstance` | `cinst` | This CRD represents one concrete guest cluster: a CRC VM, or a HostedCluster with a NodePool. It owns the actual KubeVirt/HyperShift objects. It drives provisioning to the ready state. It publishes a per-instance kubeconfig Secret. A lease claim is not one of its own phases (see "Binding model" below). There is no in-place reset. On release, the operator deletes a claimed instance. It does not recycle the instance back to Ready. |
 | `ClusterLease` | `clease` | Demand side. CI creates this CRD. The operator matches it to a free `Ready` `ClusterInstance` of the requested type. It claims the instance with a single atomic write (`status.instanceRef` plus `Phase: Bound`). It copies the instance's kubeconfig into a lease-owned Secret. It deletes the claimed instance on release, on deletion, or on TTL expiry. |
 
-Two controllers implement this:
+The pool, instance, and lease controllers implement this lifecycle. The
+CRCBundle controller manages shared bundle preparation.
+
+New capacity requires the namespace label `guestcluster.opdev.io/enabled: "true"`.
+See [namespace setup and upgrades](docs/namespaces.md) for placement, ownership,
+label removal, local inputs, and the OpenShift e2e test matrix.
 
 - **`ClusterPoolReconciler`** handles supply only. It never binds a lease
   itself; `ClusterLeaseReconciler` does that job. It lists the
@@ -605,9 +610,11 @@ independent, at two different times: one is a build-time Makefile
 variable, the other a runtime environment variable, read through
 `os.Getenv` by both `ClusterInstanceReconciler` and `CRCBundleReconciler`.
 
-For the crc-agent Job, the image must run as the `crc-agent`
-`ServiceAccount` (`config/rbac/crc_agent_*.yaml`), scoped to `secrets` and
-its `VirtualMachineInstance` in the operator's namespace. For the bundle-prep Job, it must
+Each new crc-agent Job uses an instance-owned ServiceAccount and RoleBinding
+in the instance namespace. The manager creates these resources. Its Secret
+permissions initially cover the whole namespace; they are not limited to one
+instance. Legacy Jobs retain their shared account until they finish. See
+[CRC agent permissions](docs/crc-agent-rbac.md). For the bundle-prep Job, the image must
 run as the `bundle-prep` `ServiceAccount`, scoped to `secrets` and
 `configmaps` access in the operator's namespace only.
 
@@ -697,19 +704,34 @@ Leader election is enabled by default because lease binding uses process-local
 serialization. Use `--leader-elect=false` only when one manager process can
 run against the cluster.
 
+**Set up the source namespace**, including its local input Secrets:
+
+```sh
+kubectl apply -f config/samples/namespace.yaml
+kubectl -n guestcluster-demo create secret generic pull-secret \
+  --from-file=.dockerconfigjson=./pull-secret.json --type=kubernetes.io/dockerconfigjson
+```
+
+This sample namespace has the opt-in label. For an existing namespace, use
+`kubectl label namespace <name> guestcluster.opdev.io/enabled=true --overwrite`.
+The operator namespace also needs this label if it contains pools.
+
 **Create pools** for the topologies you need. See `config/samples/` for
 ready-to-edit examples: `guestcluster_v1alpha1_clusterpool.yaml` for
 `crc`, and `guestcluster_v1alpha1_clusterpool_hcp.yaml` for `hcp`:
 
 ```sh
-kubectl apply -f config/samples/guestcluster_v1alpha1_clusterpool.yaml
-kubectl apply -f config/samples/guestcluster_v1alpha1_clusterpool_hcp.yaml
+kubectl -n guestcluster-demo apply -f config/samples/guestcluster_v1alpha1_clusterpool.yaml
+kubectl -n guestcluster-demo apply -f config/samples/guestcluster_v1alpha1_clusterpool_hcp.yaml
 ```
 
-Each pool starts topping up instances to satisfy `spec.minSize` and
+Each enabled pool starts topping up instances to satisfy `spec.minSize` and
 `spec.warmSpares`. `spec.maxSize` bounds both values.
 
 ## CI usage pattern
+
+Create leases in the same namespace as the pool. In the examples below, select
+that namespace with `kubectl -n <pool-namespace>` or set it in your context.
 
 1. CI creates a `ClusterLease` that names the pool it wants. The pool's
    `spec.type` determines the topology; for example, `crc-pool` below

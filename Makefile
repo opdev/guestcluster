@@ -115,6 +115,7 @@ api-docs: crd-ref-docs ## Generate the CRD API reference doc into docs/reference
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
+	GOFLAGS=-tags=openshift go fmt ./test/openshift
 
 .PHONY: vet
 vet: ## Run go vet against code.
@@ -153,9 +154,13 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: test-openshift-e2e
+test-openshift-e2e: manifests generate fmt vet kustomize ## Run OpenShift-specific e2e tests against the current context.
+	KUBECTL="$(KUBECTL)" KUSTOMIZE="$(KUSTOMIZE)" go test -tags=openshift ./test/openshift -count=1 -timeout=6h -v
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	$(GOLANGCI_LINT) run
+	$(GOLANGCI_LINT) run --build-tags openshift
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes

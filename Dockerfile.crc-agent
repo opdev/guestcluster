@@ -40,7 +40,9 @@
 #     guaranteed across all future OCP version skew.
 
 ########## Stage 1: build the crc-agent Go binary ##########
-FROM golang:1.26 AS crc-agent-builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS crc-agent-builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /workspace
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -50,7 +52,7 @@ COPY cmd/crc-agent/ cmd/crc-agent/
 COPY api/ api/
 COPY internal/ internal/
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -a -o /out/crc-agent ./cmd/crc-agent
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} go build -a -o /out/crc-agent ./cmd/crc-agent
 
 ########## Stage 2: runtime image ##########
 # Not distroless: this image needs a package manager to install curl, tar

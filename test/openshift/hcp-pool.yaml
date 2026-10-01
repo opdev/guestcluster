@@ -1,0 +1,16 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: openshift-e2e-hcp
+spec:
+  type: hcp
+  minSize: 1
+  maxSize: 2
+  template:
+    releaseImage: "quay.io/openshift-release-dev/ocp-release:4.22.11-x86_64"
+    ocpVersion: "4.22.11"
+    nodePoolReplicas: 1
+    controllerAvailabilityPolicy: SingleReplica
+    memory: "8Gi"
+    cores: 2
+    rootVolumeSize: "32Gi"

@@ -1,0 +1,14 @@
+apiVersion: guestcluster.opdev.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: openshift-e2e-crc
+spec:
+  type: crc
+  minSize: 1
+  maxSize: 2
+  template:
+    crcVersion: "4.22.7"
+    ocpVersion: "4.22.7"
+    memory: "16Gi"
+    cores: 4
+    rootVolumeSize: "80Gi"
