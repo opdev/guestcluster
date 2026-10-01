@@ -171,7 +171,17 @@ func TestHCPAPIEndpointIsRecordedAndSharedAcrossResources(t *testing.T) {
 		},
 	}
 	c := newHyperShiftFakeClient(t, instance, pullSecret, ingress, node)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+	readinessChecks := 0
+	r := &ClusterInstanceReconciler{
+		Client: c, Scheme: c.Scheme(),
+		GuestAPIReadinessCheck: func(_ context.Context, kubeconfig []byte) error {
+			readinessChecks++
+			if len(kubeconfig) == 0 {
+				return errors.New("guest kubeconfig is empty")
+			}
+			return nil
+		},
+	}
 
 	hc, hostname, routeKey := createHCPWithSelectedEndpoint(t, c, r, instance, ingress)
 
@@ -244,6 +254,9 @@ func TestHCPAPIEndpointIsRecordedAndSharedAcrossResources(t *testing.T) {
 	}
 	if instance.Status.Phase != brokerv1alpha1.PhaseReady {
 		t.Fatalf("phase = %q, want Ready", instance.Status.Phase)
+	}
+	if readinessChecks != 1 {
+		t.Errorf("guest API readiness checks = %d, want 1", readinessChecks)
 	}
 	if instance.Status.APIEndpoint != "https://"+hostname {
 		t.Errorf("status APIEndpoint = %q, want https://%s", instance.Status.APIEndpoint, hostname)
@@ -427,6 +440,78 @@ func TestReadyHCPRecoversEndpointBeforeRestoringMissingRoute(t *testing.T) {
 	}
 	if restoredRoute.Spec.Host != legacyHostname {
 		t.Fatalf("restored Route host = %q, want preserved legacy hostname %q", restoredRoute.Spec.Host, legacyHostname)
+	}
+}
+
+func TestReadyHCPChecksGuestAPIWithoutAPIReader(t *testing.T) {
+	ctx := context.Background()
+	instance := hcpEndpointTestInstance("hcp-ready-api-check", "tenant-one")
+	instance.UID = types.UID("hcp-ready-api-check-uid")
+	instance.Finalizers = []string{instanceFinalizer}
+	instance.Status.Phase = brokerv1alpha1.PhaseReady
+	instance.Status.APIEndpoint = "https://" + resources.APIServerHostname(instance.Name, statusIngressDomain)
+	instance.Status.KubeconfigSecretRef.Name = resources.KubeconfigSecretName(instance.Name)
+	hcpNamespace := resources.DefaultHostedClusterNamespace
+	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
+		HostedClusterName: resources.HostedClusterName(instance.Name), HostedClusterNamespace: hcpNamespace,
+		NodePoolNames: []string{resources.NodePoolName(instance.Name)},
+	}
+	hostname, err := apiEndpointHostname(instance.Status.APIEndpoint)
+	if err != nil {
+		t.Fatalf("parsing API endpoint: %v", err)
+	}
+	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(hostname)
+	if err != nil {
+		t.Fatalf("generating serving certificate: %v", err)
+	}
+	certSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: resources.KASServingCertName(instance.Name), Namespace: hcpNamespace,
+			Labels: resources.APIEndpointLabels(instance),
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
+	}
+	hostedCluster := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
+		Namespace: hcpNamespace, PullSecretName: statusCRCPullSecret,
+		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: hostname,
+	})
+	hostedCluster.Labels = resources.APIEndpointLabels(instance)
+	hcpRoute := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(hcpNamespace, hostedCluster.Name))
+	hcpRoute.Status.Ingress = []routev1.RouteIngress{{
+		Host:       hostname,
+		Conditions: []routev1.RouteIngressCondition{{Type: routev1.RouteAdmitted, Status: corev1.ConditionTrue}},
+	}}
+	kubeconfigSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace,
+			Labels: resources.CommonLabels(instance),
+		},
+		Data: map[string][]byte{resources.KubeconfigSecretKey: []byte("test kubeconfig")},
+	}
+	c := newHyperShiftFakeClient(t, instance, certSecret, hostedCluster, hcpRoute, kubeconfigSecret)
+	if err := controllerutil.SetControllerReference(instance, kubeconfigSecret, c.Scheme()); err != nil {
+		t.Fatalf("setting kubeconfig owner reference: %v", err)
+	}
+	if err := c.Update(ctx, kubeconfigSecret); err != nil {
+		t.Fatalf("updating kubeconfig Secret: %v", err)
+	}
+	readinessChecks := 0
+	r := &ClusterInstanceReconciler{
+		Client: c, Scheme: c.Scheme(),
+		GuestAPIReadinessCheck: func(_ context.Context, kubeconfig []byte) error {
+			readinessChecks++
+			if string(kubeconfig) != "test kubeconfig" {
+				return errors.New("unexpected kubeconfig data")
+			}
+			return nil
+		},
+	}
+	if _, err := r.reconcileReadyHyperShift(ctx, instance); err != nil {
+		t.Fatalf("reconcileReadyHyperShift: %v", err)
+	}
+	if readinessChecks != 1 {
+		t.Fatalf("guest API readiness checks = %d, want 1", readinessChecks)
 	}
 }
 
@@ -651,5 +736,12 @@ func newHyperShiftFakeClient(t *testing.T, objects ...client.Object) client.Clie
 	}
 	return fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&brokerv1alpha1.ClusterInstance{}).
+		WithIndex(&brokerv1alpha1.ClusterLease{}, leaseInstanceRefIndexField, func(obj client.Object) []string {
+			lease, ok := obj.(*brokerv1alpha1.ClusterLease)
+			if !ok || lease.Status.InstanceRef == nil {
+				return nil
+			}
+			return []string{lease.Status.InstanceRef.Name}
+		}).
 		WithObjects(objects...).Build()
 }

@@ -68,6 +68,11 @@ type ClusterInstanceReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	APIReader client.Reader
+
+	// GuestAPIReadinessCheck verifies that a guest kubeconfig can reach its
+	// API endpoint. Tests can replace the network check with a deterministic
+	// result. A nil value uses checkGuestAPIReady.
+	GuestAPIReadinessCheck func(context.Context, []byte) error
 }
 
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterinstances,verbs=get;list;watch;create;update;patch;delete

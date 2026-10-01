@@ -364,6 +364,13 @@ func (r *ClusterInstanceReconciler) existingHCPAPIHostname(
 	return evidence, nil
 }
 
+func (r *ClusterInstanceReconciler) checkGuestAPIReadiness(ctx context.Context, kubeconfig []byte) error {
+	if r.GuestAPIReadinessCheck != nil {
+		return r.GuestAPIReadinessCheck(ctx, kubeconfig)
+	}
+	return checkGuestAPIReady(ctx, kubeconfig)
+}
+
 // reconcileReadyHyperShift preserves Ready only while the recorded external
 // API endpoint still has its verified Route. It also recovers old Ready
 // instances whose status did not record the endpoint.
@@ -436,7 +443,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 	if !routeIsAdmitted(apiRoute) {
 		return r.markHCPRoutePending(ctx, instance, previousStatus, hostname)
 	}
-	if r.APIReader != nil && instance.Status.KubeconfigSecretRef.Name != "" {
+	if instance.Status.KubeconfigSecretRef.Name != "" {
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Status.KubeconfigSecretRef.Name}, secret); err != nil {
 			return ctrl.Result{}, fmt.Errorf("getting published HCP kubeconfig %s/%s for readiness: %w", instance.Namespace, instance.Status.KubeconfigSecretRef.Name, err)
@@ -444,7 +451,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 		if err := r.verifyHCPResource(ctx, instance, secret); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := checkGuestAPIReady(ctx, secret.Data[resources.KubeconfigSecretKey]); err != nil {
+		if err := r.checkGuestAPIReadiness(ctx, secret.Data[resources.KubeconfigSecretKey]); err != nil {
 			previous := instance.Status.DeepCopy()
 			instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
 			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
@@ -673,12 +680,10 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	if err != nil {
 		return res, fmt.Errorf("rewriting admin kubeconfig server for %s/%s: %w", namespace, existingHC.Status.KubeConfig.Name, err)
 	}
-	if r.APIReader != nil {
-		if err := checkGuestAPIReady(ctx, rewrittenKubeconfig); err != nil {
-			res.apiEndpointPending = true
-			res.apiEndpointMessage = fmt.Sprintf("waiting for external HCP API endpoint %s: %v", apiEndpoint, err)
-			return res, nil
-		}
+	if err := r.checkGuestAPIReadiness(ctx, rewrittenKubeconfig); err != nil {
+		res.apiEndpointPending = true
+		res.apiEndpointMessage = fmt.Sprintf("waiting for external HCP API endpoint %s: %v", apiEndpoint, err)
+		return res, nil
 	}
 
 	res.ready = true
