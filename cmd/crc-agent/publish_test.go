@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	"github.com/opdev/guestcluster/internal/resources"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"

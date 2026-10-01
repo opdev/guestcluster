@@ -58,7 +58,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "sigs.k8s.io/yaml"
 
-	"github.com/caxu-rh/guestcluster-operator/internal/resources"
+	"github.com/opdev/guestcluster/internal/resources"
 )
 
 // generateEd25519Key generates a fresh ed25519 keypair.
