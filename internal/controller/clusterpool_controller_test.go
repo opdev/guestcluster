@@ -76,9 +76,8 @@ var _ = Describe("ClusterPool Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &ClusterPoolReconciler{
-				Client:    k8sClient,
-				Scheme:    k8sClient.Scheme(),
-				APIReader: k8sClient,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
