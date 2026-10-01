@@ -518,6 +518,9 @@ spec:
 			cmd := exec.Command("kubectl", "create", "namespace", crcRecoveryNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "label", "namespace", crcRecoveryNamespace, "guestcluster.opdev.io/enabled=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
 
 			cmd = exec.Command("kubectl", "create", "serviceaccount", "crc-readyz", "-n", crcRecoveryNamespace)
 			_, err = utils.Run(cmd)
@@ -606,6 +609,14 @@ spec:
 				base64.StdEncoding.EncodeToString([]byte(readyzKubeconfig(token)))))).To(Succeed())
 
 			oldVMIUID := resourceField("virtualmachineinstance", instanceName, "{.metadata.uid}")
+			instanceUID := resourceField("clusterinstance", instanceName, "{.metadata.uid}")
+			ownerPatch := fmt.Sprintf(`{"metadata":{"ownerReferences":[{"apiVersion":"guestcluster.opdev.io/v1alpha1",`+
+				`"kind":"ClusterInstance","name":%q,"uid":%q,"controller":true}]}}`, instanceName, instanceUID)
+			for _, object := range []string{"virtualmachineinstance/" + instanceName, "secret/" + instanceName + "-kubeconfig"} {
+				cmd = exec.Command("kubectl", "patch", object, "-n", crcRecoveryNamespace, "--type=merge", "-p", ownerPatch)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
 			Expect(oldVMIUID).NotTo(BeEmpty())
 			vmiStatus := `{"status":{"phase":"Running"}}`
 			cmd = exec.Command("kubectl", "patch", "virtualmachineinstance", instanceName, "-n",
@@ -647,6 +658,10 @@ spec:
 			manifest := fmt.Sprintf("apiVersion: kubevirt.io/v1\nkind: VirtualMachineInstance\nmetadata:\n"+
 				"  name: %s\n  namespace: %s\nspec: {}\n", instanceName, crcRecoveryNamespace)
 			Expect(applyManifest(manifest)).To(Succeed())
+			cmd = exec.Command("kubectl", "patch", "virtualmachineinstance", instanceName,
+				"-n", crcRecoveryNamespace, "--type=merge", "-p", ownerPatch)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(resourceField("virtualmachineinstance", instanceName, "{.metadata.uid}")).
 				NotTo(Equal(oldVMIUID))
 			cmd = exec.Command("kubectl", "patch", "virtualmachineinstance", instanceName, "-n",
