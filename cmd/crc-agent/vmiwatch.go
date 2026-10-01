@@ -41,6 +41,13 @@ var (
 
 const vmiWatchRetryInterval = time.Second
 
+func (c config) backingVMName() string {
+	if c.VMName != "" {
+		return c.VMName
+	}
+	return c.InstanceName
+}
+
 // monitorCRCVMILifecycle verifies the VMI before guest changes start, then
 // cancels the returned context if that VMI is deleted or replaced. It relists
 // before each watch to recover from closed or expired watch streams.
@@ -69,7 +76,7 @@ func monitorCRCVMILifecycle(
 			}
 
 			w, err := vmis.Watch(watchCtx, metav1.ListOptions{
-				FieldSelector:       fields.OneTermEqualSelector("metadata.name", cfg.InstanceName).String(),
+				FieldSelector:       fields.OneTermEqualSelector("metadata.name", cfg.backingVMName()).String(),
 				ResourceVersion:     vmi.GetResourceVersion(),
 				AllowWatchBookmarks: true,
 			})
@@ -104,7 +111,7 @@ func ensureExpectedCRCVMIRunning(ctx context.Context, vmis dynamic.ResourceInter
 func getExpectedCRCVMI(
 	ctx context.Context, vmis dynamic.ResourceInterface, cfg config,
 ) (*unstructured.Unstructured, error) {
-	vmi, err := vmis.Get(ctx, cfg.InstanceName, metav1.GetOptions{})
+	vmi, err := vmis.Get(ctx, cfg.backingVMName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("%w: %s/%s was deleted", errCRCVMINoLongerCurrent, cfg.Namespace, cfg.InstanceName)
 	}

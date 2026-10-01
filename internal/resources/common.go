@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	brokerv1alpha1 "github.com/caxu-rh/guestcluster-operator/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -53,6 +54,25 @@ const LabelPool = "opdev.io/pool"
 
 // ManagerName is the value written into LabelManagedBy.
 const ManagerName = "guestcluster-operator"
+
+// InstanceOwnerReferences is only for resources in the instance namespace.
+func InstanceOwnerReferences(instance *brokerv1alpha1.ClusterInstance) []metav1.OwnerReference {
+	return []metav1.OwnerReference{*metav1.NewControllerRef(instance, brokerv1alpha1.GroupVersion.WithKind("ClusterInstance"))}
+}
+
+func CRCVMName(instance *brokerv1alpha1.ClusterInstance) string {
+	if instance.Status.CRC != nil && instance.Status.CRC.VMName != "" {
+		return instance.Status.CRC.VMName
+	}
+	return VMName(instance.Name)
+}
+
+func CRCDiskName(instance *brokerv1alpha1.ClusterInstance) string {
+	if instance.Status.CRC != nil && instance.Status.CRC.DataVolumeName != "" {
+		return instance.Status.CRC.DataVolumeName
+	}
+	return DataVolumeName(instance.Name)
+}
 
 // CommonLabels returns the standard label set for every object created on
 // behalf of a ClusterInstance. Callers can find these objects with a label

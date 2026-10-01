@@ -74,6 +74,10 @@ type CRCBackingStatus struct {
 	VMName string `json:"vmName,omitempty"`
 	// DataVolumeName is the CDI DataVolume providing the VM's root disk.
 	DataVolumeName string `json:"dataVolumeName,omitempty"`
+	// VMUID and DataVolumeUID retain parent identity while dependent compute and
+	// storage are deleted. Names alone cannot identify those dependents safely.
+	VMUID         string `json:"vmUID,omitempty"`
+	DataVolumeUID string `json:"dataVolumeUID,omitempty"`
 	// SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
 	// post-boot fixups and kubeconfig extraction.
 	SSHEndpoint string `json:"sshEndpoint,omitempty"`
@@ -115,6 +119,13 @@ type HyperShiftBackingStatus struct {
 
 // ClusterInstanceStatus defines the observed state of ClusterInstance.
 type ClusterInstanceStatus struct {
+	// Provisioning records the durable authorization to start backing-resource
+	// creation. Removing the namespace opt-in label does not revoke this decision.
+	// An absent value does not prove that a legacy instance has not started;
+	// the controller verifies existing backing resources before migration.
+	// +optional
+	Provisioning *ProvisioningAuthorization `json:"provisioning,omitempty"`
+
 	// Phase is the current lifecycle phase.
 	Phase ClusterInstancePhase `json:"phase,omitempty"`
 
@@ -166,6 +177,15 @@ type ClusterInstanceStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
+// ProvisioningAuthorization is written before the first backing-resource write.
+type ProvisioningAuthorization struct {
+	// StartedAt is when the controller authorized provisioning.
+	StartedAt metav1.Time `json:"startedAt"`
+	// Legacy means existing backing-resource identity was verified during upgrade.
+	// It permits verified adoption of resources from older controller versions.
+	Legacy bool `json:"legacy,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=cinst
@@ -179,6 +199,10 @@ type ClusterInstanceStatus struct {
 // ClusterInstance is the Schema for the clusterinstances API. It represents a single
 // concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
 // this operator.
+// New backing resources use the instance namespace. Provisioning requires the
+// namespace label guestcluster.opdev.io/enabled="true" until authorization is
+// recorded in status.provisioning. Authorized work, maintenance, and cleanup
+// continue after label removal. Namespace termination stops new allocations.
 type ClusterInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

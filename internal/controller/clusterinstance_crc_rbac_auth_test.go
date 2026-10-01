@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -11,6 +12,7 @@ import (
 	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -19,7 +21,7 @@ import (
 )
 
 var _ = Describe("CRC agent installed authorization", func() {
-	It("lets the manager bind the installed role and limits each agent to its namespace", func() {
+	DescribeTable("lets the installed manager bind the role and limits each agent to its namespace", func(mode string) {
 		const (
 			managerUserName = "test-agent-rbac-manager"
 			vmiGroup        = "kubevirt.io"
@@ -42,6 +44,30 @@ var _ = Describe("CRC agent installed authorization", func() {
 		managerRole := &rbacv1.ClusterRole{}
 		agentRole := &rbacv1.ClusterRole{}
 		Expect(yaml.Unmarshal(managerBytes, managerRole)).To(Succeed())
+		if mode == "olm" {
+			csvBytes, err := os.ReadFile(filepath.Join("..", "..", "bundle", "manifests", "guestcluster-operator.clusterserviceversion.yaml"))
+			Expect(err).NotTo(HaveOccurred())
+			var csv struct {
+				Spec struct {
+					Install struct {
+						Spec struct {
+							ClusterPermissions []struct {
+								ServiceAccountName string              `json:"serviceAccountName"`
+								Rules              []rbacv1.PolicyRule `json:"rules"`
+							} `json:"clusterPermissions"`
+						} `json:"spec"`
+					} `json:"install"`
+				} `json:"spec"`
+			}
+			Expect(yaml.Unmarshal(csvBytes, &csv)).To(Succeed())
+			managerRole.Rules = nil
+			for _, grant := range csv.Spec.Install.Spec.ClusterPermissions {
+				if grant.ServiceAccountName == "guestcluster-operator-controller-manager" {
+					managerRole.Rules = append(managerRole.Rules, grant.Rules...)
+				}
+			}
+			Expect(managerRole.Rules).NotTo(BeEmpty())
+		}
 		Expect(yaml.Unmarshal(agentBytes, agentRole)).To(Succeed())
 		managerRole.Name = managerUserName
 		agentRole.Name = resources.CRCAgentClusterRole()
@@ -50,8 +76,8 @@ var _ = Describe("CRC agent installed authorization", func() {
 		managerBinding := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: managerUserName}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: managerRole.Name}, Subjects: []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: managerUserName}}}
 		Expect(k8sClient.Create(ctx, managerBinding)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, managerBinding) })
-		one := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-rbac-one"}}
-		two := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-rbac-two"}}
+		one := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-rbac-one-" + mode}}
+		two := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-rbac-two-" + mode}}
 		Expect(k8sClient.Create(ctx, one)).To(Succeed())
 		Expect(k8sClient.Create(ctx, two)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, one); _ = k8sClient.Delete(ctx, two) })
@@ -87,5 +113,21 @@ var _ = Describe("CRC agent installed authorization", func() {
 				Expect(review.Status.Allowed).To(Equal(namespace == one.Name), "authorization for %s %s in %s: %+v", check.verb, check.resource, namespace, review.Status)
 			}
 		}
-	})
+		// Exercise Secret operations as the agent, including an owner reference
+		// that does not require permission to block instance deletion.
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "agent-result", Namespace: one.Name, OwnerReferences: resources.InstanceOwnerReferences(instance)}}
+		secret.OwnerReferences[0].BlockOwnerDeletion = nil
+		created, err := typed.CoreV1().Secrets(one.Name).Create(ctx, secret, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		created.Data = map[string][]byte{"result": []byte("test")}
+		_, err = typed.CoreV1().Secrets(one.Name).Update(ctx, created, metav1.UpdateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = typed.CoreV1().Secrets(one.Name).Get(ctx, secret.Name, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("foreign-%s", mode), Namespace: two.Name}}
+		_, err = typed.CoreV1().Secrets(two.Name).Create(ctx, foreign, metav1.CreateOptions{})
+		Expect(apierrors.IsForbidden(err)).To(BeTrue())
+		_, err = typed.CoreV1().Secrets(two.Name).Get(ctx, foreign.Name, metav1.GetOptions{})
+		Expect(apierrors.IsForbidden(err)).To(BeTrue())
+	}, Entry("direct-install permissions", "direct"), Entry("OLM permissions", "olm"))
 })

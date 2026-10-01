@@ -91,8 +91,9 @@ func newProjectionTestInstance(name string, leaseRef *corev1.LocalObjectReferenc
 			},
 		},
 		Status: brokerv1alpha1.ClusterInstanceStatus{
-			Phase:    brokerv1alpha1.PhaseReady,
-			LeaseRef: leaseRef,
+			Provisioning: testProvisioningAuthorization(),
+			Phase:        brokerv1alpha1.PhaseReady,
+			LeaseRef:     leaseRef,
 			HyperShift: &brokerv1alpha1.HyperShiftBackingStatus{
 				HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
 				HostedClusterName:      name,
@@ -116,7 +117,7 @@ func TestClusterInstance_LeaseRefProjection_SetWhenClaimed(t *testing.T) {
 		},
 	}
 
-	c := newLeaseRefProjectionFakeClient(t, inst, lease)
+	c := newLeaseRefProjectionFakeClient(t, inst, lease, enabledTestNamespace(testNamespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(inst)}); err != nil {
@@ -139,7 +140,7 @@ func TestClusterInstance_LeaseRefProjection_ClearedWhenUnclaimed(t *testing.T) {
 	// this projection hasn't caught up yet) and no claiming lease at all.
 	inst := newProjectionTestInstance("proj-inst-unclaimed", &corev1.LocalObjectReference{Name: "stale-lease"})
 
-	c := newLeaseRefProjectionFakeClient(t, inst)
+	c := newLeaseRefProjectionFakeClient(t, inst, enabledTestNamespace(testNamespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(inst)}); err != nil {

@@ -77,7 +77,7 @@ func TestClusterPoolWaitsForTerminatingInstanceAfterLeaseTTLRelease(t *testing.T
 			BoundTime:   &boundTime,
 		},
 	}
-	c := newStatusWriteFakeClient(t, pool, instance, lease)
+	c := newStatusWriteFakeClient(t, pool, instance, lease, enabledTestNamespace(testNamespace))
 	leaseReconciler := &ClusterLeaseReconciler{
 		Client: c,
 		Scheme: c.Scheme(),

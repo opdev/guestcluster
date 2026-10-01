@@ -49,6 +49,12 @@ const (
 	recoveryVMIUID       = "vmi-uid"
 )
 
+func ownCRCFixtures(instance *brokerv1alpha1.ClusterInstance, objects ...client.Object) {
+	for _, obj := range objects {
+		obj.SetOwnerReferences(resources.InstanceOwnerReferences(instance))
+	}
+}
+
 func TestCRCVMIDChanged(t *testing.T) {
 	const oldUID = "old"
 	tests := []struct {
@@ -87,6 +93,7 @@ func TestReconcileReadyCRC_VMIReplacementRemovesPreviousHandoff(t *testing.T) {
 	published := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace}}
 	identity := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCIdentitySecretName(instance.Name), Namespace: instance.Namespace}}
 	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("new-vmi")}}
+	ownCRCFixtures(instance, job, raw, published, identity, vmi)
 	c := newCRCRecoveryFakeClient(t, instance, job, raw, published, identity, vmi)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -112,8 +119,8 @@ func TestReconcileReadyCRC_VMIReplacementRemovesPreviousHandoff(t *testing.T) {
 	if got.Status.Phase != brokerv1alpha1.PhaseProvisioning || got.Status.CRC.VMIUID != "new-vmi" {
 		t.Fatalf("expected Provisioning with new VMI UID, got %+v", got.Status)
 	}
-	if got.Status.APIEndpoint != "" || got.Status.KubeconfigSecretRef.Name != "" {
-		t.Fatalf("expected cleared published access details, got %+v", got.Status)
+	if got.Status.APIEndpoint != oldAPIEndpoint || got.Status.KubeconfigSecretRef.Name != "" {
+		t.Fatalf("expected preserved endpoint and cleared kubeconfig reference, got %+v", got.Status)
 	}
 }
 
@@ -159,6 +166,7 @@ contexts:
 current-context: guest
 `, server.URL))},
 	}
+	ownCRCFixtures(instance, vmi, published)
 	c := newCRCRecoveryFakeClient(t, instance, lease, vmi, published)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -201,6 +209,7 @@ func TestReconcileReadyCRCRemovesLeaseEligibilityWhenHealthCheckFails(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: resources.RawKubeconfigSecretNameForVMI(instance.Name, recoveryVMIUID), Namespace: instance.Namespace},
 		Data:       map[string][]byte{resources.KubeconfigSecretKey: []byte("retained")},
 	}
+	ownCRCFixtures(instance, vmi, published, raw)
 	c := newCRCRecoveryFakeClient(t, instance, vmi, published, raw)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -258,6 +267,7 @@ func TestReconcileReadyCRCDoesNotRestoreKubeconfigBeforeHealthCheck(t *testing.T
 			resources.VMIUIDSecretKey:     []byte(recoveryVMIUID),
 		},
 	}
+	ownCRCFixtures(instance, vmi, raw)
 	c := newCRCRecoveryFakeClient(t, instance, vmi, raw)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -320,6 +330,7 @@ func TestTeardownCRCBackingDeletesAllVMIHandoffs(t *testing.T) {
 		Namespace: instance.Namespace,
 		Labels:    rawLabels,
 	}}
+	ownCRCFixtures(instance, oldJob, currentJob, oldRaw, currentRaw)
 	c := newCRCRecoveryFakeClient(t, instance, oldJob, currentJob, oldRaw, currentRaw)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -354,6 +365,7 @@ func TestReconcileProvisioningCRCVMI_VMIReplacementRemovesPreviousHandoff(t *tes
 	published := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace}}
 	identity := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCIdentitySecretName(instance.Name), Namespace: instance.Namespace}}
 	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("new-vmi")}}
+	ownCRCFixtures(instance, job, raw, published, identity, vmi)
 	c := newCRCRecoveryFakeClient(t, instance, job, raw, published, identity, vmi)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -396,6 +408,7 @@ func TestReconcileProvisioningCRCVMI_UnrecordedVMIUIDDoesNotInvalidateHandoff(t 
 	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, "vmi"), Namespace: instance.Namespace}}
 	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: types.UID("vmi")}}
+	ownCRCFixtures(instance, job, vmi)
 	c := newCRCRecoveryFakeClient(t, instance, job, vmi)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
@@ -474,6 +487,7 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 			pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pull-secret", Namespace: instance.Namespace}, Data: map[string][]byte{resources.PullSecretDataKey: []byte("pull")}}
 			sshSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bundle-ssh-key", Namespace: instance.Namespace}, Data: map[string][]byte{crcTestBundleSSHKeyDataKey: []byte("key")}}
 			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
+			ownCRCFixtures(instance, vm, vmi)
 			c := newCRCRecoveryFakeClient(t, instance, vm, vmi, job, pullSecret, sshSecret, ingress)
 			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 

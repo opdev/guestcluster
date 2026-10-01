@@ -35,6 +35,8 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `vmName` _string_ | VMName is the name of the KubeVirt VirtualMachine running the CRC/SNO bundle. |  |  |
 | `dataVolumeName` _string_ | DataVolumeName is the CDI DataVolume providing the VM's root disk. |  |  |
+| `vmUID` _string_ | VMUID and DataVolumeUID retain parent identity while dependent compute and<br />storage are deleted. Names alone cannot identify those dependents safely. |  |  |
+| `dataVolumeUID` _string_ |  |  |  |
 | `sshEndpoint` _string_ | SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for<br />post-boot fixups and kubeconfig extraction. |  |  |
 | `vmiUID` _string_ | VMIUID identifies the VirtualMachineInstance for which the crc-agent<br />completed its post-boot handoff. |  |  |
 | `bootKey` _[CRCBootKeyStatus](#crcbootkeystatus)_ | BootKey records the golden disk and private key used for this instance.<br />It is set before the DataVolume is created and stays fixed for its lifetime. |  | Optional: \{\} <br /> |
@@ -190,6 +192,10 @@ _Appears in:_
 ClusterInstance is the Schema for the clusterinstances API. It represents a single
 concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
 this operator.
+New backing resources use the instance namespace. Provisioning requires the
+namespace label guestcluster.opdev.io/enabled="true" until authorization is
+recorded in status.provisioning. Authorized work, maintenance, and cleanup
+continue after label removal. Namespace termination stops new allocations.
 
 
 
@@ -290,6 +296,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `provisioning` _[ProvisioningAuthorization](#provisioningauthorization)_ | Provisioning records the durable authorization to start backing-resource<br />creation. Removing the namespace opt-in label does not revoke this decision.<br />An absent value does not prove that a legacy instance has not started;<br />the controller verifies existing backing resources before migration. |  | Optional: \{\} <br /> |
 | `phase` _[ClusterInstancePhase](#clusterinstancephase)_ | Phase is the current lifecycle phase. |  | Enum: [Provisioning Ready Failed Terminating] <br /> |
 | `ocpVersion` _string_ | OCPVersion is the OpenShift version reported by the running guest<br />cluster (as opposed to Spec.Template.OCPVersion, which is the requested version).<br />A mismatch between requested and observed is surfaced via the VersionMismatch<br />condition and must be treated by CI as a hard fail unless explicitly waived. |  |  |
 | `topology` _[ClusterTopology](#clustertopology)_ | Topology echoes Spec.Type once the instance is Ready, for convenient consumption<br />as an explicit CI output alongside OCPVersion. |  | Enum: [crc hcp] <br /> |
@@ -415,6 +422,10 @@ _Appears in:_
 ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
 guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
 ClusterLease objects.
+The pool, its instances, inputs, and leases share one source namespace. New
+provisioning and pool-triggered CRCBundle preparation require namespace label
+guestcluster.opdev.io/enabled="true". Existing capacity can still be leased
+after opt-out. The label does not control direct CRCBundle administration.
 
 
 
@@ -467,7 +478,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `type` _[ClusterTopology](#clustertopology)_ | Type is the topology of guest clusters this pool manages. |  | Enum: [crc hcp] <br />Required: \{\} <br /> |
 | `maxSize` _integer_ | MaxSize is the hard budget cap. The pool will never have more than this<br />many ClusterInstances at once. Failed and terminating instances count<br />toward this limit. The ClusterPool controller enforces this limit. |  | Minimum: 1 <br />Required: \{\} <br /> |
-| `minSize` _integer_ | MinSize is the minimum number of ClusterInstances the pool keeps in<br />existence, independent of lease demand. A deleting instance remains in<br />this count until its backing-resource cleanup completes. Unlike<br />WarmSpares, MinSize is a stable total-count floor. A lease binding does not<br />change the total count, so MinSize cannot race with lease binding. The<br />default value 0 allows the pool to shrink to zero when no leases need an<br />instance and WarmSpares is also 0. MaxSize still applies. | 0 | Optional: \{\} <br /> |
+| `minSize` _integer_ | MinSize is the minimum number of ClusterInstances the pool keeps in<br />existence, independent of lease demand. A deleting instance remains in<br />this count until its backing-resource cleanup completes. Unlike<br />WarmSpares, MinSize is a stable total-count floor. A lease binding does not<br />change the total count, so MinSize cannot race with lease binding. The<br />default value 0 allows the pool to shrink to zero when no leases need an<br />instance and WarmSpares is also 0. MaxSize still applies.<br />New capacity requires guestcluster.opdev.io/enabled="true" on the source<br />namespace. A disabled or terminating namespace cannot allocate instances. | 0 | Optional: \{\} <br /> |
 | `warmSpares` _integer_ | WarmSpares is the number of Ready, unleased ClusterInstances the pool<br />controller tries to keep provisioned ahead of demand, so that a ClusterLease<br />can bind instantly instead of waiting for a full provision. This floor is<br />measured against spare (available) capacity, so it rises with load. Under N<br />active leases the pool targets roughly N+WarmSpares total instances. Subject<br />to MaxSize. (Formerly named MinAvailable.) | 0 | Optional: \{\} <br /> |
 | `template` _[ClusterTemplate](#clustertemplate)_ | Template describes how to provision new ClusterInstances for this pool. |  | Required: \{\} <br /> |
 
@@ -489,7 +500,7 @@ _Appears in:_
 | `terminatingInstances` _integer_ | TerminatingInstances is the number of deleting ClusterInstances whose<br />backing-resource cleanup still consumes pool capacity. |  |  |
 | `availableInstances` _integer_ | AvailableInstances is the count of Ready, unleased ClusterInstances. |  |  |
 | `leasedInstances` _integer_ | LeasedInstances is the count of ClusterInstances currently bound to a ClusterLease. |  |  |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#condition-v1-meta) array_ | Conditions represent the latest available observations of the pool's state. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#condition-v1-meta) array_ | Conditions represent the latest available observations of the pool's state.<br />ProvisioningAllowed reports namespace opt-in independently of existing capacity. |  | Optional: \{\} <br /> |
 
 
 #### ClusterTemplate
@@ -584,5 +595,22 @@ _Appears in:_
 | `hostedClusterName` _string_ | HostedClusterName is the name of the hypershift.openshift.io/v1beta1 HostedCluster. |  |  |
 | `hostedClusterNamespace` _string_ | HostedClusterNamespace records the namespace holding the HostedCluster.<br />New instances use their source namespace. Legacy instances can use "clusters". |  |  |
 | `nodePoolNames` _string array_ | NodePoolNames lists the NodePool(s) backing this instance's workers. |  |  |
+
+
+#### ProvisioningAuthorization
+
+
+
+ProvisioningAuthorization is written before the first backing-resource write.
+
+
+
+_Appears in:_
+- [ClusterInstanceStatus](#clusterinstancestatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta)_ | StartedAt is when the controller authorized provisioning. |  |  |
+| `legacy` _boolean_ | Legacy means existing backing-resource identity was verified during upgrade.<br />It permits verified adoption of resources from older controller versions. |  |  |
 
 

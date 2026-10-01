@@ -174,6 +174,13 @@ func (r *ClusterLeaseReconciler) reconcilePending(ctx context.Context, lease *br
 	}
 
 	instanceList := &brokerv1alpha1.ClusterInstanceList{}
+	policy, err := readNamespacePolicy(ctx, r.apiReader(), lease.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if policy.terminating {
+		return ctrl.Result{RequeueAfter: leasePendingRequeue}, r.setPendingCondition(ctx, lease, policy.reason, policy.message)
+	}
 	if err := r.apiReader().List(ctx, instanceList,
 		client.InNamespace(lease.Namespace),
 		client.MatchingLabels(resources.PoolLabels(lease.Spec.PoolRef.Name)),
@@ -267,12 +274,28 @@ func (r *ClusterLeaseReconciler) bind(ctx context.Context, lease *brokerv1alpha1
 		if err := controllerutil.SetControllerReference(lease, leaseSecret, r.Scheme); err != nil {
 			return ctrl.Result{}, fmt.Errorf("setting owner ref on lease kubeconfig secret: %w", err)
 		}
-		if err := r.Create(ctx, leaseSecret); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("creating lease kubeconfig secret: %w", err)
+		if err := r.Create(ctx, leaseSecret); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return ctrl.Result{}, fmt.Errorf("creating lease kubeconfig secret: %w", err)
+			}
+			// A concurrent object must be verified before committing the lease.
+			if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: lease.Namespace, Name: leaseSecretName}, leaseSecret); err != nil {
+				return ctrl.Result{}, err
+			}
+			if !metav1.IsControlledBy(leaseSecret, lease) {
+				return ctrl.Result{}, fmt.Errorf("lease kubeconfig Secret %s/%s belongs to another owner", lease.Namespace, leaseSecretName)
+			}
+			leaseSecret.Data = srcSecret.Data
+			if err := r.Update(ctx, leaseSecret); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	case err != nil:
 		return ctrl.Result{}, fmt.Errorf("fetching lease kubeconfig secret: %w", err)
 	default:
+		if !metav1.IsControlledBy(leaseSecret, lease) {
+			return ctrl.Result{}, fmt.Errorf("lease kubeconfig Secret %s/%s belongs to another owner", lease.Namespace, leaseSecretName)
+		}
 		leaseSecret.Data = srcSecret.Data
 		if err := r.Update(ctx, leaseSecret); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating lease kubeconfig secret: %w", err)

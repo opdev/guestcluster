@@ -1,3 +1,5 @@
+# Apply in a namespace with guestcluster.opdev.io/enabled: "true".
+# Create the local pull-secret first. See namespace.yaml and docs/namespaces.md.
 apiVersion: guestcluster.opdev.io/v1alpha1
 kind: ClusterPool
 metadata:

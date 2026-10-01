@@ -111,7 +111,7 @@ func (r *ClusterInstanceReconciler) deleteCRCAgentRBAC(ctx context.Context, inst
 	pending := false
 	for _, obj := range objects {
 		key := types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}
-		if err := r.Get(ctx, key, obj); apierrors.IsNotFound(err) {
+		if err := r.platformReader().Get(ctx, key, obj); apierrors.IsNotFound(err) {
 			continue
 		} else if err != nil {
 			return false, fmt.Errorf("getting CRC agent RBAC %s: %w", key, err)
@@ -119,7 +119,7 @@ func (r *ClusterInstanceReconciler) deleteCRCAgentRBAC(ctx context.Context, inst
 		if !metav1.IsControlledBy(obj, instance) {
 			continue
 		}
-		deleting, err := r.deleteIfExists(ctx, obj, "CRC agent RBAC")
+		deleting, err := r.deleteIfExists(ctx, obj, "CRC agent RBAC", instanceUIDPrecondition(obj.GetUID()))
 		if err != nil {
 			return false, err
 		}

@@ -48,6 +48,10 @@ spec:
           ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
           guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
           ClusterLease objects.
+          The pool, its instances, inputs, and leases share one source namespace. New
+          provisioning and pool-triggered CRCBundle preparation require namespace label
+          guestcluster.opdev.io/enabled="true". Existing capacity can still be leased
+          after opt-out. The label does not control direct CRCBundle administration.
         properties:
           apiVersion:
             description: |-
@@ -87,6 +91,8 @@ spec:
                   change the total count, so MinSize cannot race with lease binding. The
                   default value 0 allows the pool to shrink to zero when no leases need an
                   instance and WarmSpares is also 0. MaxSize still applies.
+                  New capacity requires guestcluster.opdev.io/enabled="true" on the source
+                  namespace. A disabled or terminating namespace cannot allocate instances.
                 format: int32
                 type: integer
               template:
@@ -95,14 +101,13 @@ spec:
                 properties:
                   bundleSSHKeyRef:
                     description: |-
-                      BundleSSHKeyRef references a Secret in the ClusterInstance's namespace containing the
+                      BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the
                       CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official
                       .crcbundle, used to reach the booted VM as user "core"), under a data key named
                       "id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,
                       the operator derives the SSH key automatically from the referenced CRCBundle
                       instead, and this field is ignored. When CRCVersion is unset, this field is
-                      required for topology=crc: the operator copies this key to an instance-owned,
-                      namespace-local Secret before the crc-agent Job uses it to SSH into the
+                      required for topology=crc: the crc-agent Job uses this key to SSH into the
                       freshly booted CRC VM and run the post-boot fixups natively (start kubelet,
                       approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the
                       kubeconfig server to the externally-routable API Route hostname the
@@ -163,9 +168,11 @@ spec:
                     type: string
                   hcpWorkerSSHKeyRef:
                     description: |-
-                      HCPWorkerSSHKeyRef optionally references a Secret (in the operator's namespace)
-                      containing an SSH public key, under a data key named "id_rsa.pub", to inject as
-                      an authorized key for the "core" user on every hcp NodePool worker (via
+                      HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace
+                      containing an SSH public key under the data key "id_rsa.pub". New HCP
+                      HostedClusters reference this Secret directly; the operator does not own
+                      or delete it. Legacy HostedClusters in "clusters" use a managed copy.
+                      The key is injected for the "core" user on every HCP NodePool worker (via
                       HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
                       generation). This field is only a debugging convenience (e.g. to inspect a
                       worker that is stuck before ever registering as a Node) and has no effect on
@@ -226,8 +233,8 @@ spec:
                       is optional. When unset, the operator uses the "pull-secret" Secret in the
                       ClusterInstance's namespace. An administrator or pool creator must provide that
                       Secret, for example by copying the management cluster's pull secret into the
-                      pool namespace. For topology=hcp, the Secret is copied to the HostedCluster's
-                      namespace under a per-instance name before the HostedCluster uses it. Set this
+                      pool namespace. New HCP HostedClusters reference this local Secret directly.
+                      Legacy HCP instances in another namespace use a per-instance copy. Set this
                       field explicitly to use a different credential (e.g. one scoped to a
                       disconnected mirror).
                     properties:
@@ -308,8 +315,9 @@ spec:
                 format: int32
                 type: integer
               conditions:
-                description: Conditions represent the latest available observations
-                  of the pool's state.
+                description: |-
+                  Conditions represent the latest available observations of the pool's state.
+                  ProvisioningAllowed reports namespace opt-in independently of existing capacity.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

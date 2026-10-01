@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -83,6 +85,10 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+	defaultNamespace := &corev1.Namespace{}
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default"}, defaultNamespace)).To(Succeed())
+	defaultNamespace.Labels[namespaceEnabledLabel] = namespaceEnabledValue
+	Expect(k8sClient.Update(ctx, defaultNamespace)).To(Succeed())
 })
 
 var _ = AfterSuite(func() {

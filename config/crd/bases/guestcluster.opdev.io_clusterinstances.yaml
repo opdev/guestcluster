@@ -42,6 +42,10 @@ spec:
           ClusterInstance is the Schema for the clusterinstances API. It represents a single
           concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
           this operator.
+          New backing resources use the instance namespace. Provisioning requires the
+          namespace label guestcluster.opdev.io/enabled="true" until authorization is
+          recorded in status.provisioning. Authorized work, maintenance, and cleanup
+          continue after label removal. Namespace termination stops new allocations.
         properties:
           apiVersion:
             description: |-
@@ -388,6 +392,8 @@ spec:
                     description: DataVolumeName is the CDI DataVolume providing the
                       VM's root disk.
                     type: string
+                  dataVolumeUID:
+                    type: string
                   sshEndpoint:
                     description: |-
                       SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
@@ -396,6 +402,11 @@ spec:
                   vmName:
                     description: VMName is the name of the KubeVirt VirtualMachine
                       running the CRC/SNO bundle.
+                    type: string
+                  vmUID:
+                    description: |-
+                      VMUID and DataVolumeUID retain parent identity while dependent compute and
+                      storage are deleted. Names alone cannot identify those dependents safely.
                     type: string
                   vmiUID:
                     description: |-
@@ -480,6 +491,25 @@ spec:
                 - Failed
                 - Terminating
                 type: string
+              provisioning:
+                description: |-
+                  Provisioning records the durable authorization to start backing-resource
+                  creation. Removing the namespace opt-in label does not revoke this decision.
+                  An absent value does not prove that a legacy instance has not started;
+                  the controller verifies existing backing resources before migration.
+                properties:
+                  legacy:
+                    description: |-
+                      Legacy means existing backing-resource identity was verified during upgrade.
+                      It permits verified adoption of resources from older controller versions.
+                    type: boolean
+                  startedAt:
+                    description: StartedAt is when the controller authorized provisioning.
+                    format: date-time
+                    type: string
+                required:
+                - startedAt
+                type: object
               topology:
                 description: |-
                   Topology echoes Spec.Type once the instance is Ready, for convenient consumption

@@ -144,9 +144,10 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, ss
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      CRCAgentJobName(instance.Name, vmiUID),
-			Namespace: instance.Namespace,
-			Labels:    labels,
+			Name:            CRCAgentJobName(instance.Name, vmiUID),
+			OwnerReferences: InstanceOwnerReferences(instance),
+			Namespace:       instance.Namespace,
+			Labels:          labels,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:          &backoffLimit,
@@ -164,6 +165,8 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, ss
 							Image: image,
 							Env: []corev1.EnvVar{
 								{Name: "INSTANCE_NAME", Value: instance.Name},
+								{Name: "INSTANCE_UID", Value: string(instance.UID)},
+								{Name: "CRC_VM_NAME", Value: CRCVMName(instance)},
 								{Name: "INSTANCE_NAMESPACE", Value: instance.Namespace},
 								{Name: "CRC_SSH_HOST", Value: vmIP},
 								{Name: "CRC_VMI_UID", Value: vmiUID},

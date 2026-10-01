@@ -14,6 +14,10 @@ spec:
         ClusterInstance is the Schema for the clusterinstances API. It represents a single
         concrete guest OpenShift cluster (CRC VM or HyperShift hosted cluster) managed by
         this operator.
+        New backing resources use the instance namespace. Provisioning requires the
+        namespace label guestcluster.opdev.io/enabled="true" until authorization is
+        recorded in status.provisioning. Authorized work, maintenance, and cleanup
+        continue after label removal. Namespace termination stops new allocations.
       displayName: Cluster Instance
       kind: ClusterInstance
       name: clusterinstances.guestcluster.opdev.io
@@ -30,6 +34,10 @@ spec:
         ClusterPool is the Schema for the clusterpools API. It declares a budgeted pool of
         guest OpenShift clusters (CRC or HyperShift) that CI jobs can lease from via
         ClusterLease objects.
+        The pool, its instances, inputs, and leases share one source namespace. New
+        provisioning and pool-triggered CRCBundle preparation require namespace label
+        guestcluster.opdev.io/enabled="true". Existing capacity can still be leased
+        after opt-out. The label does not control direct CRCBundle administration.
       displayName: Cluster Pool
       kind: ClusterPool
       name: clusterpools.guestcluster.opdev.io
@@ -64,4 +72,5 @@ spec:
   provider:
     name: Provider Name
     url: https://your.domain
+  replaces: guestcluster-operator.v0.0.0
   version: 0.0.0

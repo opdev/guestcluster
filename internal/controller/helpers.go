@@ -74,13 +74,13 @@ func (r *ClusterInstanceReconciler) deleteIfExists(ctx context.Context, obj clie
 func (r *ClusterInstanceReconciler) upsertSecret(ctx context.Context, desired *corev1.Secret, changed func(existing *corev1.Secret) bool, verify ...func(*corev1.Secret) error) error {
 	existing := &corev1.Secret{}
 	key := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	if err := r.Get(ctx, key, existing); apierrors.IsNotFound(err) {
+	if err := r.platformReader().Get(ctx, key, existing); apierrors.IsNotFound(err) {
 		if createErr := r.Create(ctx, desired); createErr == nil {
 			return nil
 		} else if !apierrors.IsAlreadyExists(createErr) {
 			return fmt.Errorf("creating secret %s/%s: %w", key.Namespace, key.Name, createErr)
 		}
-		if err := r.Get(ctx, key, existing); err != nil {
+		if err := r.platformReader().Get(ctx, key, existing); err != nil {
 			return fmt.Errorf("getting concurrently created secret %s/%s: %w", key.Namespace, key.Name, err)
 		}
 	} else if err != nil {
