@@ -162,9 +162,6 @@ func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, 
 		Data: map[string][]byte{resources.HCPWorkerSSHKeyDataKey: data},
 	}
 	desired.Labels = resources.APIEndpointLabels(instance)
-	if err := r.verifyExistingHCPResource(ctx, instance, desired); err != nil {
-		return "", err
-	}
 
 	changed := func(existing *corev1.Secret) bool {
 		return !bytes.Equal(existing.Data[resources.HCPWorkerSSHKeyDataKey], data)

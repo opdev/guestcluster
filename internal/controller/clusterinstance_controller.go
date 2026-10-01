@@ -677,9 +677,6 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 	}
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
 		desired.Labels = resources.APIEndpointLabels(instance)
-		if err := r.verifyExistingHCPResource(ctx, instance, desired); err != nil {
-			return "", err
-		}
 	}
 	// Owner references only work within the same namespace as the owner.
 	// For topologies where targetNamespace == instance.Namespace (crc),
