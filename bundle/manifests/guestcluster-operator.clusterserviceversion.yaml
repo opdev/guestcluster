@@ -429,7 +429,7 @@ spec:
                 - /manager
                 env:
                 - name: CRC_AGENT_IMAGE
-                  value: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-crc-agent:ns58-20260929
+                  value: opdev.io/guestcluster-operator-crc-agent:latest
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -440,7 +440,7 @@ spec:
                   value: guestcluster-operator-crc-agent
                 - name: CRC_AGENT_CLUSTER_ROLE
                   value: guestcluster-operator-crc-agent-instance-role
-                image: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-controller:ns58-20260929-v6
+                image: opdev.io/guestcluster-operator:latest
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -535,7 +535,7 @@ spec:
     name: Provider Name
     url: https://your.domain
   relatedImages:
-  - image: image-registry.openshift-image-registry.svc:5000/guestcluster-operator-system/guestcluster-operator-crc-agent:ns58-20260929
+  - image: opdev.io/guestcluster-operator-crc-agent:latest
     name: crc-agent
   replaces: guestcluster-operator.v0.0.0
   version: 0.0.1
