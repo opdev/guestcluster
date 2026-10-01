@@ -156,7 +156,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	defer clusterInstanceReservation.Unlock()
 
 	instanceList := &brokerv1alpha1.ClusterInstanceList{}
-	if err := r.APIReader.List(ctx, instanceList,
+	if err := reader.List(ctx, instanceList,
 		client.InNamespace(pool.Namespace),
 		client.MatchingLabels(resources.PoolLabels(pool.Name)),
 	); err != nil {
@@ -166,7 +166,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// claimed and pendingDemand come from every ClusterLease in the
 	// namespace; see computeLeaseAccounting's doc for the accounting rules.
 	leaseList := &brokerv1alpha1.ClusterLeaseList{}
-	if err := r.APIReader.List(ctx, leaseList, client.InNamespace(pool.Namespace)); err != nil {
+	if err := reader.List(ctx, leaseList, client.InNamespace(pool.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing ClusterLeases: %w", err)
 	}
 	claimed, pendingDemand := computeLeaseAccounting(leaseList, pool.Name)
