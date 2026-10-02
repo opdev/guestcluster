@@ -116,11 +116,27 @@ func DataVolumeName(instanceName string) string {
 	return instanceName + "-rootdisk"
 }
 
-// HostedClusterName is the deterministic name of the HostedCluster backing a
-// topology=hcp-* ClusterInstance. Using the ClusterInstance's own name keeps
-// the mapping trivially invertible.
-func HostedClusterName(instanceName string) string {
-	return instanceName
+// HostedClusterName includes a 64-bit hash of the source namespace and instance
+// name. The hash separates identities that HyperShift's namespace concatenation
+// and dot replacement would otherwise merge. The readable prefix is shortened
+// to leave room for the source namespace in the 63-character control-plane name.
+// If the namespace leaves no room for the hash, the placement check rejects it.
+func HostedClusterName(instanceName, instanceNamespace string) string {
+	const hashLength = 16
+	hash := sha256.Sum256([]byte(instanceNamespace + "\x00" + instanceName))
+	digest := hex.EncodeToString(hash[:])[:hashLength]
+	prefixLimit := 63 - len(instanceNamespace) - 1 - len("gc--") - hashLength
+	if prefixLimit <= 0 {
+		return "gc-" + digest
+	}
+	prefix := dnsSafeHostnameLabel(instanceName)
+	if len(prefix) > prefixLimit {
+		prefix = strings.TrimRight(prefix[:prefixLimit], "-")
+	}
+	if prefix == "" {
+		return "gc-" + digest
+	}
+	return "gc-" + prefix + "-" + digest
 }
 
 // NodePoolName is the deterministic name of the (default) NodePool backing a

@@ -214,9 +214,10 @@ func runNamespaceLifecyclePair(
 				return instance.Status.Phase == brokerv1alpha1.PhaseReady && instance.Status.CRC.VMIUID != oldUID
 			})
 		} else {
+			hcName := resources.HostedClusterName(instance.Name, instance.Namespace)
 			route := &routev1.Route{ObjectMeta: metav1.ObjectMeta{
 				Name:      resources.HostedClusterAPIRouteName(instance.Name),
-				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name),
+				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, hcName),
 			}}
 			must(t, c.Get(ctx, client.ObjectKeyFromObject(route), route))
 			oldUID := route.UID
@@ -509,7 +510,8 @@ func verifyPlacement(t *testing.T, ctx context.Context, c client.Client, instanc
 	t.Helper()
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
 		hc := &hyperv1beta1.HostedCluster{}
-		must(t, c.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc))
+		hcName := resources.HostedClusterName(instance.Name, instance.Namespace)
+		must(t, c.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: hcName}, hc))
 		if !metav1.IsControlledBy(hc, instance) {
 			t.Fatal("HostedCluster owner is incorrect")
 		}
@@ -543,7 +545,8 @@ func verifyCleanup(t *testing.T, ctx context.Context, c client.Client, instance 
 		})
 	}
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
-		name := resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
+		hcName := resources.HostedClusterName(instance.Name, instance.Namespace)
+		name := resources.HostedControlPlaneNamespace(instance.Namespace, hcName)
 		waitGone(t, ctx, c, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
 	} else {
 		for _, obj := range []client.Object{

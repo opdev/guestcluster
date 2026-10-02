@@ -116,7 +116,7 @@ func TestSameNamedHCPLifecycleIsIndependent(t *testing.T) {
 		}
 	}
 	for _, obj := range []client.Object{
-		&hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: second.Name, Namespace: second.Namespace}},
+		&hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedClusterName(second.Name, second.Namespace), Namespace: second.Namespace}},
 		&hyperv1beta1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: resources.NodePoolName(second.Name), Namespace: second.Namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KASServingCertName(second.Name), Namespace: second.Namespace}},
 		hcpEndpointTestPullSecret(first), hcpEndpointTestPullSecret(second),
@@ -125,7 +125,7 @@ func TestSameNamedHCPLifecycleIsIndependent(t *testing.T) {
 			t.Fatalf("resource %T %s did not survive: %v", obj, client.ObjectKeyFromObject(obj), err)
 		}
 	}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: first.Namespace, Name: first.Name}, &hyperv1beta1.HostedCluster{}); !apierrors.IsNotFound(err) {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: first.Namespace, Name: resources.HostedClusterName(first.Name, first.Namespace)}, &hyperv1beta1.HostedCluster{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("first HostedCluster was not deleted: %v", err)
 	}
 	if _, err := r.reconcileHyperShift(ctx, second); err != nil {
@@ -152,14 +152,14 @@ func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, in
 		assignFakeHostedClusterUID(t, r, instance)
 	}
 	hc := &hyperv1beta1.HostedCluster{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: resources.HostedClusterName(instance.Name, instance.Namespace)}, hc); err != nil {
 		t.Fatal(err)
 	}
 	if !metav1.IsControlledBy(hc, instance) || hc.Spec.PullSecret.Name != instance.Spec.Template.PullSecretRef.Name {
 		t.Fatal("HostedCluster does not use its local owner and input Secret")
 	}
 	hc.Status.Conditions = []metav1.Condition{{Type: string(hyperv1beta1.HostedClusterAvailable), Status: metav1.ConditionTrue}}
-	hc.Status.KubeConfig = &corev1.LocalObjectReference{Name: resources.AdminKubeconfigSecretName(instance.Name)}
+	hc.Status.KubeConfig = &corev1.LocalObjectReference{Name: resources.AdminKubeconfigSecretName(hc.Name)}
 	if err := r.Update(ctx, hc); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func assignFakeHostedClusterUID(t *testing.T, r *ClusterInstanceReconciler, inst
 	t.Helper()
 	ctx := context.Background()
 	hc := &hyperv1beta1.HostedCluster{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc); err != nil || hc.UID != "" {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: resources.HostedClusterName(instance.Name, instance.Namespace)}, hc); err != nil || hc.UID != "" {
 		return
 	}
 	hc.UID = types.UID("hosted-cluster-" + instance.Namespace + "-" + instance.Name)
@@ -262,7 +262,7 @@ func hcpPublishedConfig(t *testing.T, c client.Client, instance *brokerv1alpha1.
 }
 
 func TestHCPPlacementRejectsInvalidControlPlaneNamespace(t *testing.T) {
-	instance := hcpEndpointTestInstance(strings.Repeat("a", 40), strings.Repeat("n", 40))
+	instance := hcpEndpointTestInstance("guest", strings.Repeat("n", 44))
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
@@ -272,7 +272,7 @@ func TestHCPPlacementRejectsInvalidControlPlaneNamespace(t *testing.T) {
 
 func TestHCPPlacementRejectsUnclaimedControlPlaneNamespace(t *testing.T) {
 	instance := hcpEndpointTestInstance("existing-namespace", "tenant-one")
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace))}}
 	c := newHyperShiftFakeClient(t, instance, ns)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
@@ -280,17 +280,79 @@ func TestHCPPlacementRejectsUnclaimedControlPlaneNamespace(t *testing.T) {
 	}
 }
 
-func TestHCPPlacementRejectsNamespaceCollisions(t *testing.T) {
-	for _, name := range []string{"a-b", "a.b"} {
-		t.Run(name, func(t *testing.T) {
-			instance := hcpEndpointTestInstance(name, "tenant")
-			other := hcpEndpointTestInstance("b", "tenant-a")
-			c := newHyperShiftFakeClient(t, instance, other)
-			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-			if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
-				t.Fatal("accepted a colliding HyperShift control-plane namespace")
-			}
-		})
+func TestHCPPlacementRejectsForeignHostedClusterNamespaceCollision(t *testing.T) {
+	instance := hcpEndpointTestInstance("a-b", "tenant")
+	name := resources.HostedClusterName(instance.Name, instance.Namespace)
+	// A separately managed HostedCluster can still use an arbitrary name
+	// that produces the same control-plane namespace.
+	foreign := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
+		Namespace: instance.Namespace + "-gc", Name: strings.TrimPrefix(name, "gc-"),
+	}}
+	c := newHyperShiftFakeClient(t, instance, foreign)
+	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+	if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
+		t.Fatal("accepted a control-plane namespace used by a foreign HostedCluster")
+	}
+}
+
+func TestHCPPreviouslyCollidingInstancesReachReady(t *testing.T) {
+	ctx := context.Background()
+	instance := hcpEndpointTestInstance("a-b", "tenant")
+	instance.UID = "allocated-instance"
+	ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: testManagementNodeName}, Status: corev1.NodeStatus{
+		Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: testManagementNodeIP}},
+	}}
+	c := newHyperShiftFakeClient(t, instance, hcpEndpointTestPullSecret(instance), ingress, node)
+	if err := kubevirtv1.AddToScheme(c.Scheme()); err != nil {
+		t.Fatal(err)
+	}
+	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
+	// Start the first HostedCluster before the second instance appears.
+	for range 2 {
+		if _, err := r.reconcileHyperShift(ctx, instance); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assignFakeHostedClusterUID(t, r, instance)
+
+	other := hcpEndpointTestInstance("b", "tenant-a")
+	other.UID = "second-instance"
+	for _, obj := range []client.Object{other, hcpEndpointTestPullSecret(other)} {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.checkHCPPlacement(ctx, other); err != nil {
+		t.Fatalf("second instance was rejected: %v", err)
+	}
+
+	// Both instances must create their own NodePool and Ready kubeconfig.
+	provisionHCPForPlacementTest(t, r, instance)
+	provisionHCPForPlacementTest(t, r, other)
+	firstNamespace, firstName := hcpLocation(instance)
+	secondNamespace, secondName := hcpLocation(other)
+	if resources.HostedControlPlaneNamespace(firstNamespace, firstName) == resources.HostedControlPlaneNamespace(secondNamespace, secondName) {
+		t.Fatal("instances share a control-plane namespace")
+	}
+	before := hcpPublishedConfig(t, c, other)
+	for range 2 {
+		if _, err := r.teardownHyperShiftBacking(ctx, instance); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: firstNamespace, Name: firstName}, &hyperv1beta1.HostedCluster{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("first HostedCluster was not deleted: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: secondNamespace, Name: secondName}, &hyperv1beta1.HostedCluster{}); err != nil {
+		t.Fatalf("second HostedCluster did not survive: %v", err)
+	}
+	if _, err := r.reconcileHyperShift(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, hcpPublishedConfig(t, c, other)) {
+		t.Fatal("deletion changed the second instance's credentials")
 	}
 }
 
@@ -324,7 +386,7 @@ func TestHCPRefusesForeignLocalResources(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			instance := hcpEndpointTestInstance("foreign-resource", "tenant-one")
-			var foreign client.Object = &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace}}
+			var foreign client.Object = &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedClusterName(instance.Name, instance.Namespace), Namespace: instance.Namespace}}
 			if strings.Contains(kind, "TLS Secret") {
 				foreign = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KASServingCertName(instance.Name), Namespace: instance.Namespace}}
 			}
@@ -352,7 +414,7 @@ func TestHCPRefusesNodePoolWithWrongHostedClusterOwner(t *testing.T) {
 	instance.UID = "instance-uid"
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	np := resources.BuildNodePool(instance, instance.Name, instance.Namespace, 1)
+	np := resources.BuildNodePool(instance, resources.HostedClusterName(instance.Name, instance.Namespace), instance.Namespace, 1)
 	foreign := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: "another-cluster", Namespace: instance.Namespace, UID: "foreign-uid"}}
 	if err := controllerutil.SetControllerReference(foreign, np, c.Scheme()); err != nil {
 		t.Fatal(err)

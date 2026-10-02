@@ -379,13 +379,20 @@ the ClusterInstance namespace. Local pull-secret and optional worker SSH-key
 inputs remain user-owned and survive instance cleanup. Generated local
 resources have instance owner references.
 
-The API Route stays in the HyperShift control-plane namespace, derived from
-the source namespace and instance name. This combined name must fit
-the 63-character namespace limit; the NodePool name must also fit its DNS
-label limit. The operator rejects unsupported names, existing unclaimed
-control-plane namespaces, and collisions caused by concatenation or dot
-replacement before new provisioning. API hostnames use
-the source namespace and instance name and remain fixed after selection.
+HostedCluster names use `gc-<instance-prefix>-<identity-hash>`. The 16-character
+hash comes from the source namespace and full instance name. The readable prefix
+is shortened when needed. If there is no room for the prefix, the name is
+`gc-<identity-hash>`. This separates identities such as `tenant/a-b` and
+`tenant-a/b`, including names with repeated hyphens or dots.
+
+The API Route stays in the HyperShift control-plane namespace:
+`<source-namespace>-<HostedCluster-name>`. HyperShift selects this namespace.
+The combined name must fit the 63-character namespace limit. The source
+namespace can be at most 43 characters; the hash is never shortened. The NodePool
+name must also fit its DNS label limit. The operator rejects unsupported names,
+existing unclaimed control-plane namespaces, and conflicts with other
+HostedClusters before new provisioning. API hostnames use the source namespace
+and instance name and remain fixed after selection.
 
 HyperShift must watch the source namespaces that contain HostedClusters.
 The upstream HyperShift manager uses a cluster-wide cache by default; verify

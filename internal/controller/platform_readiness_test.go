@@ -208,7 +208,7 @@ func TestReconcileDeletionWaitsForBackingResourceTeardown(t *testing.T) {
 		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
 	backing := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
-		Name:            resources.HostedClusterName(instance.Name),
+		Name:            resources.HostedClusterName(instance.Name, instance.Namespace),
 		Namespace:       instance.Namespace,
 		Finalizers:      []string{"test.example.com/backing-cleanup"},
 		Labels:          resources.APIEndpointLabels(instance),

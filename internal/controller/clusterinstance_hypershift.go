@@ -425,11 +425,14 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 		if err := r.verifyHCPResource(ctx, instance, existingHC); err != nil {
 			return res, err
 		}
+	} else {
+		// Check placement before allocation. A later colliding instance must
+		// not block an existing HostedCluster with a verified owner.
+		if err := r.checkHCPPlacement(ctx, instance); err != nil {
+			return res, err
+		}
 	}
 	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, hcName)
-	if err := r.checkHCPPlacement(ctx, instance); err != nil {
-		return res, err
-	}
 	apiServerHostname, endpointNeedsPersist, err := r.resolveHCPAPIHostname(ctx, instance, hostedClusterExists, hcpNamespace)
 	if err != nil {
 		return res, err

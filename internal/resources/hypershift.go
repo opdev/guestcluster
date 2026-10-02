@@ -176,7 +176,7 @@ func BuildHostedCluster(instance *brokerv1alpha1.ClusterInstance, opts HostedClu
 
 	hc := &hyperv1beta1.HostedCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      HostedClusterName(instance.Name),
+			Name:      HostedClusterName(instance.Name, instance.Namespace),
 			Namespace: opts.Namespace,
 			Labels:    CommonLabels(instance),
 		},
@@ -334,11 +334,9 @@ func HostedClusterAvailable(hc *hyperv1beta1.HostedCluster) bool {
 // convention exactly (see
 // hypershift-operator/controllers/manifests.HostedControlPlaneNamespace):
 // "<HostedCluster namespace>-<HostedCluster name>", with any dots in the
-// name replaced by hyphens. This replacement is irrelevant here in
-// practice, since ClusterInstance names are always valid Kubernetes object
-// names and never contain dots.
-func HostedControlPlaneNamespace(namespace, instanceName string) string {
-	return namespace + "-" + strings.ReplaceAll(instanceName, ".", "-")
+// name replaced by hyphens. Pass the HostedCluster name, not the instance name.
+func HostedControlPlaneNamespace(namespace, hostedClusterName string) string {
+	return namespace + "-" + strings.ReplaceAll(hostedClusterName, ".", "-")
 }
 
 // hostedClusterKASServiceName is the fixed name of HyperShift's own

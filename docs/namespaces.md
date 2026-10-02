@@ -48,11 +48,19 @@ a local Secret; the default is `pull-secret`. Manual CRC inputs use
 `template.hcpWorkerSSHKeyRef`. New HCP clusters reference these local inputs
 directly. CRCBundle instances use an instance-owned copy of the shared SSH key.
 
-HyperShift must watch every source namespace used for HCP. Its derived
-control-plane namespace must fit the 63-character namespace limit. Concatenation
-and dot normalization can cause collisions even when the individual source
-names differ. The operator checks name limits and existing claims before new
-HCP allocation. Verify watch scope in the installed HyperShift deployment.
+HyperShift must watch every source namespace used for HCP. The operator names
+each HostedCluster `gc-<instance-prefix>-<identity-hash>`. The hash is the first
+16 hexadecimal characters of SHA-256 over the source namespace, a NUL separator,
+and the full instance name. It separates identities that simple concatenation
+or dot replacement would merge, such as `tenant/a-b` and `tenant-a/b`.
+
+HyperShift creates control-plane namespace
+`<source-namespace>-<HostedCluster-name>`. The operator shortens the readable
+prefix to fit the 63-character namespace limit. When necessary, it removes the
+prefix and uses `gc-<identity-hash>`. It never shortens the hash. Source namespaces
+longer than 43 characters cannot fit this rule and are rejected for HCP.
+The operator still checks name limits and conflicts with existing resources
+before HCP allocation. Verify watch scope in the installed HyperShift deployment.
 
 ## Remove and restore opt-in
 
@@ -82,13 +90,15 @@ Namespace events wake waiting pools and instances when the label is restored.
 
 Namespace termination is stronger than opt-out. It stops new allocations,
 including lease binding, while instance and lease finalizers continue cleanup.
-HCP cleanup uses recorded backing locations even when those locations are
-outside the terminating source namespace.
+HCP cleanup derives the backing locations from the source namespace and hashed
+HostedCluster name, including the separate control-plane namespace.
 
 ## Upgrade behavior
 
 This release does not adopt backing resources created by earlier versions.
 Delete or replace those `ClusterInstance` objects before you use this release.
+HostedCluster names now include an identity hash. Delete existing HCP instances
+with the previous release and wait for cleanup before installing this release.
 Wait for CRC agent Jobs to finish before you remove the old shared CRC agent
 account and its Role and RoleBinding.
 

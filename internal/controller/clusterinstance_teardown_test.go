@@ -274,7 +274,7 @@ func TestReconcileDeleteHCPWaitsForWorkerVMIsAndLauncherPods(t *testing.T) {
 	}
 	const resourceFinalizer = "test.example.io/cleanup"
 	hc := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
-		Name:            resources.HostedClusterName(instance.Name),
+		Name:            resources.HostedClusterName(instance.Name, instance.Namespace),
 		Namespace:       instance.Namespace,
 		UID:             "hosted-cluster-uid",
 		Finalizers:      []string{resourceFinalizer},
@@ -296,7 +296,7 @@ func TestReconcileDeleteHCPWaitsForWorkerVMIsAndLauncherPods(t *testing.T) {
 			}(),
 		},
 	}, Spec: hyperv1beta1.NodePoolSpec{ClusterName: hc.Name}}
-	hcpNamespace := resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
+	hcpNamespace := resources.HostedControlPlaneNamespace(hc.Namespace, hc.Name)
 	workerVMIName := "hcp-worker-vmi"
 	workerVMI := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{
 		Name:      workerVMIName,
@@ -391,7 +391,7 @@ func TestReconcileDeleteWaitsForLauncherPodMissingFromCache(t *testing.T) {
 			objects := []client.Object{instance, pod}
 			var dv *cdiv1beta1.DataVolume
 			if topology == brokerv1alpha1.TopologyHCP {
-				pod.Namespace = resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
+				pod.Namespace = resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace))
 				pod.Labels = map[string]string{hyperv1beta1.NodePoolNameLabel: resources.NodePoolName(instance.Name)}
 			} else {
 				dv = &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
@@ -461,14 +461,14 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 			// has no NodePool label and is not yet visible in the cache.
 			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 				Name:      "worker-root-disk",
-				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name),
+				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace)),
 			}}
 			if deleting {
 				pvc.DeletionTimestamp = timePointer(time.Now())
 				pvc.Finalizers = []string{"test.example.io/storage-cleanup"}
 			}
 			otherPVC := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, "other-cluster"),
+				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName("other-cluster", instance.Namespace)),
 			}}
 			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC, enabledTestNamespace(pool.Namespace))
 			c.hidePVCsFromList = true
