@@ -9,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -191,8 +190,4 @@ func (r *ClusterInstanceReconciler) recordCRCIdentity(ctx context.Context, insta
 		return fmt.Errorf("cannot record CRC backing identity: %w", err)
 	}
 	return nil
-}
-
-func instanceUIDPrecondition(uid types.UID) client.DeleteOption {
-	return client.Preconditions{UID: &uid}
 }

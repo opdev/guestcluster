@@ -119,7 +119,8 @@ func (r *ClusterInstanceReconciler) deleteCRCAgentRBAC(ctx context.Context, inst
 		if !metav1.IsControlledBy(obj, instance) {
 			continue
 		}
-		deleting, err := r.deleteIfExists(ctx, obj, "CRC agent RBAC", instanceUIDPrecondition(obj.GetUID()))
+		uid := obj.GetUID()
+		deleting, err := r.deleteIfExists(ctx, obj, "CRC agent RBAC", client.Preconditions{UID: &uid})
 		if err != nil {
 			return false, err
 		}

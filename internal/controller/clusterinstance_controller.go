@@ -226,13 +226,13 @@ func (r *ClusterInstanceReconciler) gatePlatformOperations(ctx context.Context, 
 			Message:            "Platform dependencies are not ready",
 			ObservedGeneration: instance.Generation,
 		})
-		if err := r.updatePlatformStatus(ctx, instance, previousStatus); err != nil {
+		if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating platform readiness status"); err != nil {
 			return nil, err
 		}
 		return &ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	if err := r.updatePlatformStatus(ctx, instance, previousStatus); err != nil {
+	if err := r.updateStatusIfChanged(ctx, instance, previousStatus, "updating platform readiness status"); err != nil {
 		return nil, err
 	}
 	if !equality.Semantic.DeepEqual(*previousStatus, instance.Status) {
@@ -248,10 +248,6 @@ func firstBlockedReason(conditions []platformCondition) string {
 		}
 	}
 	return "OperandNotReady"
-}
-
-func (r *ClusterInstanceReconciler) updatePlatformStatus(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus) error {
-	return r.updateStatusIfChanged(ctx, instance, previousStatus, "updating platform readiness status")
 }
 
 func (r *ClusterInstanceReconciler) updateStatusIfChanged(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, previousStatus *brokerv1alpha1.ClusterInstanceStatus, operation string) error {
