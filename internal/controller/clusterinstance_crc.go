@@ -128,7 +128,7 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 		log.Info(resources.BundleNotReadyMessage(bundle))
 		return nil, nil
 	}
-	if bundle.Status.QCOW2PVCNamespace == "" || bundle.Status.QCOW2PVCRef == nil || bundle.Status.QCOW2PVCRef.Name == "" || bundle.Status.SSHKeySecretRef == nil || bundle.Status.SSHKeySecretRef.Name == "" {
+	if bundle.Status.DiskImagePVCNamespace == "" || bundle.Status.DiskImagePVCRef == nil || bundle.Status.DiskImagePVCRef.Name == "" || bundle.Status.SSHKeySecretRef == nil || bundle.Status.SSHKeySecretRef.Name == "" {
 		return nil, crcBootKeyError{fmt.Errorf("CRCBundle %s has invalid or incomplete Ready disk/SSH key references", bundleName)}
 	}
 	return &crcDataVolumeSource{

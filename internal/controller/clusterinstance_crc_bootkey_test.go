@@ -30,14 +30,14 @@ func bootKeyFixture() (*brokerv1alpha1.ClusterInstance, *brokerv1alpha1.CRCBundl
 	instance := &brokerv1alpha1.ClusterInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "crc-one", Namespace: "tenant-one", UID: types.UID("instance-one")},
 		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyCRC,
-			Template: brokerv1alpha1.ClusterTemplate{CRCVersion: "4.16.0"}},
+			Template: brokerv1alpha1.ClusterTemplate{CRCVersion: testOCPVersion}},
 	}
 	bundle := &brokerv1alpha1.CRCBundle{
-		ObjectMeta: metav1.ObjectMeta{Name: resources.CRCBundleName("4.16.0", resources.DefaultCRCArch), UID: types.UID("bundle-one")},
+		ObjectMeta: metav1.ObjectMeta{Name: resources.CRCBundleName(testOCPVersion, resources.DefaultCRCArch), UID: types.UID("bundle-one")},
 		Spec:       brokerv1alpha1.CRCBundleSpec{StorageClassName: "golden-storage"},
 		Status: brokerv1alpha1.CRCBundleStatus{
-			Phase: brokerv1alpha1.CRCBundlePhaseReady, QCOW2PVCNamespace: bootKeySourceNamespace, SHA256: "bundle-checksum-one",
-			QCOW2PVCRef:     &corev1.LocalObjectReference{Name: "golden"},
+			Phase: brokerv1alpha1.CRCBundlePhaseReady, DiskImagePVCNamespace: bootKeySourceNamespace, SHA256: "bundle-checksum-one",
+			DiskImagePVCRef: &corev1.LocalObjectReference{Name: "golden"},
 			SSHKeySecretRef: &corev1.LocalObjectReference{Name: "source-key"},
 		},
 	}
@@ -95,7 +95,7 @@ func TestCRCBootKeyInvalidSources(t *testing.T) {
 		modify     func(*brokerv1alpha1.CRCBundle, *corev1.Secret)
 		omitSecret bool
 	}{
-		{"missing namespace", invalidBundleSource, func(b *brokerv1alpha1.CRCBundle, _ *corev1.Secret) { b.Status.QCOW2PVCNamespace = "" }, false},
+		{"missing namespace", invalidBundleSource, func(b *brokerv1alpha1.CRCBundle, _ *corev1.Secret) { b.Status.DiskImagePVCNamespace = "" }, false},
 		{"missing reference", invalidBundleSource, func(b *brokerv1alpha1.CRCBundle, _ *corev1.Secret) { b.Status.SSHKeySecretRef = nil }, false},
 		{"empty reference", invalidBundleSource, func(b *brokerv1alpha1.CRCBundle, _ *corev1.Secret) { b.Status.SSHKeySecretRef.Name = "" }, false},
 		{"missing secret", "getting CRCBundle SSH key", nil, true},

@@ -41,9 +41,9 @@ func TestBuildCRCDataVolumeFromBundleUsesCrossNamespaceGoldenPVC(t *testing.T) {
 	bundle := &brokerv1alpha1.CRCBundle{
 		ObjectMeta: metav1.ObjectMeta{Name: "crc-4-16-0-amd64"},
 		Status: brokerv1alpha1.CRCBundleStatus{
-			Phase:             brokerv1alpha1.CRCBundlePhaseReady,
-			QCOW2PVCRef:       &corev1.LocalObjectReference{Name: goldenPVCName},
-			QCOW2PVCNamespace: bundleNamespace,
+			Phase:                 brokerv1alpha1.CRCBundlePhaseReady,
+			DiskImagePVCRef:       &corev1.LocalObjectReference{Name: goldenPVCName},
+			DiskImagePVCNamespace: bundleNamespace,
 		},
 	}
 

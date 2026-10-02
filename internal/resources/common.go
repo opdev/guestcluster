@@ -421,9 +421,9 @@ func CRCBundleName(version, arch string) string {
 const DefaultCRCArch = "amd64"
 
 // GoldenPVCName is the deterministic name of the PersistentVolumeClaim (in
-// OperatorNamespace) that a CRCBundle's bundle-prep Job extracts crc.qcow2
-// into. ClusterInstance DataVolumes clone from this PVC once the bundle is
-// Ready.
+// OperatorNamespace) that a CRCBundle's bundle-prep Job stores the raw
+// /disk.img in. ClusterInstance DataVolumes clone from this PVC once the
+// bundle is Ready.
 func GoldenPVCName(version, arch string) string {
 	return CRCBundleName(version, arch) + "-golden"
 }

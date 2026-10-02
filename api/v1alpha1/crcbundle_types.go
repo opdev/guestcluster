@@ -44,8 +44,8 @@ const (
 // hosting crc.qcow2/id_ecdsa_crc yourself. The admin specifies only a version (and,
 // on the ClusterPool/ClusterInstance referencing it, a pull secret for runtime
 // injection). CRCBundleReconciler downloads the official bundle from the OpenShift
-// mirror, verifies its checksum, extracts it, and caches the resulting crc.qcow2
-// disk image in a golden PersistentVolumeClaim (plus the bundle's SSH private key
+// mirror, verifies its checksum, converts crc.qcow2 to a raw disk image at
+// /disk.img in a golden PersistentVolumeClaim (plus the bundle's SSH private key
 // in a derived Secret). Any number of ClusterPools/ClusterInstances, in any
 // namespace, can clone from this bundle via CDI's cross-namespace PVC clone support.
 type CRCBundleSpec struct {
@@ -71,15 +71,15 @@ type CRCBundleSpec struct {
 	// +optional
 	SHA256URL string `json:"sha256URL,omitempty"`
 
-	// StorageClassName is the StorageClass used for the golden PVC that caches the
-	// extracted crc.qcow2 disk image for this version. For fast per-instance
+	// StorageClassName is the StorageClass for the golden PVC. The PVC stores the
+	// raw /disk.img converted from crc.qcow2. For fast per-instance
 	// provisioning it should support CSI clone or snapshot; if it does not,
 	// ClusterInstances fall back to a full re-import per instance.
 	// +optional
 	StorageClassName string `json:"storageClassName,omitempty"`
 
-	// GoldenVolumeSize is the size of the golden PVC that stores the extracted
-	// crc.qcow2. Defaults to 35Gi (CRC bundle disks are typically ~31Gi).
+	// GoldenVolumeSize is the size of the golden PVC. It stores the raw disk image
+	// at /disk.img. Defaults to 35Gi (CRC bundle disks are typically ~31Gi).
 	// +optional
 	// +kubebuilder:default="35Gi"
 	GoldenVolumeSize string `json:"goldenVolumeSize,omitempty"`
@@ -91,18 +91,18 @@ type CRCBundleStatus struct {
 	// +optional
 	Phase CRCBundlePhase `json:"phase,omitempty"`
 
-	// QCOW2PVCRef references the golden PersistentVolumeClaim holding the extracted
-	// crc.qcow2 disk image, once Phase=Ready. ClusterInstance DataVolumes clone
-	// from it via a cross-namespace CDI PVC source.
+	// DiskImagePVCRef references the PersistentVolumeClaim that holds the raw
+	// /disk.img, once Phase=Ready. ClusterInstance DataVolumes clone from it via
+	// a cross-namespace CDI PVC source.
 	// +optional
-	QCOW2PVCRef *corev1.LocalObjectReference `json:"qcow2PVCRef,omitempty"`
+	DiskImagePVCRef *corev1.LocalObjectReference `json:"diskImagePVCRef,omitempty"`
 
-	// QCOW2PVCNamespace is the namespace QCOW2PVCRef lives in (the operator's own
+	// DiskImagePVCNamespace is the namespace DiskImagePVCRef lives in (the operator's own
 	// namespace, where the bundle-prep Job runs).
 	// +optional
-	QCOW2PVCNamespace string `json:"qcow2PVCNamespace,omitempty"`
+	DiskImagePVCNamespace string `json:"diskImagePVCNamespace,omitempty"`
 
-	// SSHKeySecretRef references the Secret (in QCOW2PVCNamespace) holding the
+	// SSHKeySecretRef references the Secret (in DiskImagePVCNamespace) holding the
 	// bundle's id_ecdsa_crc SSH private key under data key "id_ecdsa", derived
 	// automatically during extraction.
 	// +optional

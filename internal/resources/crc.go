@@ -88,12 +88,12 @@ func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) *cdiv1beta1.Da
 // sourced by CLONING the golden PersistentVolumeClaim of a Ready CRCBundle
 // (see ClusterTemplate.CRCVersion) rather than importing the disk image
 // over HTTP. This is the turnkey path: the bundle-prep Job (see
-// BuildBundlePrepJob) has already downloaded, verified, and extracted
-// crc.qcow2 into the bundle's golden PVC exactly once. Every instance that
+// BuildBundlePrepJob) has already downloaded and verified the bundle, then
+// converted crc.qcow2 to raw /disk.img in the golden PVC. Every instance that
 // references that version gets its own copy via CDI's cross-namespace PVC
 // clone support, with no per-instance download. Callers must confirm
 // bundle.Status.Phase == CRCBundlePhaseReady, and that
-// QCOW2PVCRef/QCOW2PVCNamespace are populated, before calling this
+// DiskImagePVCRef/DiskImagePVCNamespace are populated, before calling this
 // function.
 func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bundle *brokerv1alpha1.CRCBundle) *cdiv1beta1.DataVolume {
 	tmpl := instance.Spec.Template
@@ -128,8 +128,8 @@ func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bund
 		Spec: cdiv1beta1.DataVolumeSpec{
 			Source: &cdiv1beta1.DataVolumeSource{
 				PVC: &cdiv1beta1.DataVolumeSourcePVC{
-					Namespace: bundle.Status.QCOW2PVCNamespace,
-					Name:      bundle.Status.QCOW2PVCRef.Name,
+					Namespace: bundle.Status.DiskImagePVCNamespace,
+					Name:      bundle.Status.DiskImagePVCRef.Name,
 				},
 			},
 			Storage: storage,

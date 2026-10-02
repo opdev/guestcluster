@@ -141,8 +141,8 @@ A CRCBundle is the turnkey alternative to manually extracting a .crcbundle and
 hosting crc.qcow2/id_ecdsa_crc yourself. The admin specifies only a version (and,
 on the ClusterPool/ClusterInstance referencing it, a pull secret for runtime
 injection). CRCBundleReconciler downloads the official bundle from the OpenShift
-mirror, verifies its checksum, extracts it, and caches the resulting crc.qcow2
-disk image in a golden PersistentVolumeClaim (plus the bundle's SSH private key
+mirror, verifies its checksum, converts crc.qcow2 to a raw disk image at
+/disk.img in a golden PersistentVolumeClaim (plus the bundle's SSH private key
 in a derived Secret). Any number of ClusterPools/ClusterInstances, in any
 namespace, can clone from this bundle via CDI's cross-namespace PVC clone support.
 
@@ -157,8 +157,8 @@ _Appears in:_
 | `arch` _string_ | Arch is the CPU architecture of the bundle to fetch. | amd64 | Enum: [amd64 arm64] <br />Optional: \{\} <br /> |
 | `bundleURL` _string_ | BundleURL optionally overrides the deterministic official mirror URL<br />(https://mirror.openshift.com/pub/openshift-v4/clients/crc/bundles/openshift/<version>/crc_libvirt_<version>_<arch>.crcbundle),<br />which is derived from Version/Arch when this is left empty. |  | Optional: \{\} <br /> |
 | `sha256URL` _string_ | SHA256URL optionally overrides the deterministic mirror checksum URL (the<br />sha256sum.txt published alongside the bundle) used to verify the download.<br />Derived from Version/Arch when left empty. |  | Optional: \{\} <br /> |
-| `storageClassName` _string_ | StorageClassName is the StorageClass used for the golden PVC that caches the<br />extracted crc.qcow2 disk image for this version. For fast per-instance<br />provisioning it should support CSI clone or snapshot; if it does not,<br />ClusterInstances fall back to a full re-import per instance. |  | Optional: \{\} <br /> |
-| `goldenVolumeSize` _string_ | GoldenVolumeSize is the size of the golden PVC that stores the extracted<br />crc.qcow2. Defaults to 35Gi (CRC bundle disks are typically ~31Gi). | 35Gi | Optional: \{\} <br /> |
+| `storageClassName` _string_ | StorageClassName is the StorageClass for the golden PVC. The PVC stores the<br />raw /disk.img converted from crc.qcow2. For fast per-instance<br />provisioning it should support CSI clone or snapshot; if it does not,<br />ClusterInstances fall back to a full re-import per instance. |  | Optional: \{\} <br /> |
+| `goldenVolumeSize` _string_ | GoldenVolumeSize is the size of the golden PVC. It stores the raw disk image<br />at /disk.img. Defaults to 35Gi (CRC bundle disks are typically ~31Gi). | 35Gi | Optional: \{\} <br /> |
 
 
 #### CRCBundleStatus
@@ -175,9 +175,9 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `phase` _[CRCBundlePhase](#crcbundlephase)_ | Phase summarizes where this bundle is in its download/extract lifecycle. |  | Optional: \{\} <br /> |
-| `qcow2PVCRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | QCOW2PVCRef references the golden PersistentVolumeClaim holding the extracted<br />crc.qcow2 disk image, once Phase=Ready. ClusterInstance DataVolumes clone<br />from it via a cross-namespace CDI PVC source. |  | Optional: \{\} <br /> |
-| `qcow2PVCNamespace` _string_ | QCOW2PVCNamespace is the namespace QCOW2PVCRef lives in (the operator's own<br />namespace, where the bundle-prep Job runs). |  | Optional: \{\} <br /> |
-| `sshKeySecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | SSHKeySecretRef references the Secret (in QCOW2PVCNamespace) holding the<br />bundle's id_ecdsa_crc SSH private key under data key "id_ecdsa", derived<br />automatically during extraction. |  | Optional: \{\} <br /> |
+| `diskImagePVCRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | DiskImagePVCRef references the PersistentVolumeClaim that holds the raw<br />/disk.img, once Phase=Ready. ClusterInstance DataVolumes clone from it via<br />a cross-namespace CDI PVC source. |  | Optional: \{\} <br /> |
+| `diskImagePVCNamespace` _string_ | DiskImagePVCNamespace is the namespace DiskImagePVCRef lives in (the operator's own<br />namespace, where the bundle-prep Job runs). |  | Optional: \{\} <br /> |
+| `sshKeySecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | SSHKeySecretRef references the Secret (in DiskImagePVCNamespace) holding the<br />bundle's id_ecdsa_crc SSH private key under data key "id_ecdsa", derived<br />automatically during extraction. |  | Optional: \{\} <br /> |
 | `ocpVersion` _string_ | OCPVersion is the OpenShift version reported by the bundle's own<br />crc-bundle-info.json metadata, recorded here once extraction succeeds. |  | Optional: \{\} <br /> |
 | `sha256` _string_ | SHA256 is the verified checksum of the downloaded .crcbundle artifact. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#condition-v1-meta) array_ | Conditions represent the latest available observations of the bundle's state. |  | Optional: \{\} <br /> |
