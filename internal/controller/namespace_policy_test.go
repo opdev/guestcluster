@@ -111,7 +111,7 @@ func TestDisabledPoolDoesNotPrepareExpandOrReplace(t *testing.T) {
 	for _, topology := range []brokerv1alpha1.ClusterTopology{brokerv1alpha1.TopologyCRC, brokerv1alpha1.TopologyHCP} {
 		t.Run(string(topology), func(t *testing.T) {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: pullSecretTestNamespace}}
-			pool := &brokerv1alpha1.ClusterPool{ObjectMeta: metav1.ObjectMeta{Name: policyTestPoolName, Namespace: ns.Name}, Spec: brokerv1alpha1.ClusterPoolSpec{Type: topology, MinSize: 1, MaxSize: 3, Template: brokerv1alpha1.ClusterTemplate{CRCVersion: "4.16.0"}}}
+			pool := &brokerv1alpha1.ClusterPool{ObjectMeta: metav1.ObjectMeta{Name: policyTestPoolName, Namespace: ns.Name}, Spec: brokerv1alpha1.ClusterPoolSpec{Type: topology, MinSize: 1, MaxSize: 3, Template: brokerv1alpha1.ClusterTemplate{CRCVersion: testOCPVersion}}}
 			c := newStatusWriteFakeClient(t, ns, pool)
 			r := &ClusterPoolReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
 			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(pool)}

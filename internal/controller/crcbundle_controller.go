@@ -46,9 +46,9 @@ const crcBundleRequeueInterval = 20 * time.Second
 const conditionTypeBundleReady = "Ready"
 
 // CRCBundleReconciler turns a version-keyed CRCBundle request into a
-// downloaded, verified, extracted crc.qcow2, cached in a golden
-// PersistentVolumeClaim, plus a derived SSH-key Secret, by running a
-// one-shot bundle-prep Job. It is the turnkey counterpart to hosting a
+// downloaded and verified CRC bundle. It converts crc.qcow2 to raw /disk.img
+// in a golden PVC and publishes the derived SSH-key Secret. It runs a one-shot
+// bundle-prep Job. This is the turnkey counterpart to hosting a
 // crc.qcow2 manually: an admin, or more commonly ClusterPoolReconciler
 // acting on their behalf (see clusterpool_controller.go's ensureCRCBundle),
 // only needs to specify a version. Every ClusterPool and ClusterInstance
@@ -210,8 +210,8 @@ func (r *CRCBundleReconciler) reconcilePreparing(ctx context.Context, bundle *br
 	}
 
 	bundle.Status.Phase = brokerv1alpha1.CRCBundlePhaseReady
-	bundle.Status.QCOW2PVCRef = &corev1.LocalObjectReference{Name: resources.GoldenPVCName(bundle.Spec.Version, arch)}
-	bundle.Status.QCOW2PVCNamespace = resources.OperatorNamespace()
+	bundle.Status.DiskImagePVCRef = &corev1.LocalObjectReference{Name: resources.GoldenPVCName(bundle.Spec.Version, arch)}
+	bundle.Status.DiskImagePVCNamespace = resources.OperatorNamespace()
 	bundle.Status.SSHKeySecretRef = &corev1.LocalObjectReference{Name: sshSecretName}
 	bundle.Status.OCPVersion = cm.Data["ocpVersion"]
 	bundle.Status.SHA256 = cm.Data["sha256"]
@@ -294,6 +294,17 @@ func (r *CRCBundleReconciler) reconcileReady(ctx context.Context, bundle *broker
 		return r.resetToPending(ctx, bundle, "SSH key secret is missing")
 	} else if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Republish deterministic references if status fields are missing. This
+	// migrates existing CRCBundles to the current disk image PVC reference fields
+	// without re-running bundle preparation.
+	if bundle.Status.DiskImagePVCRef == nil || bundle.Status.DiskImagePVCRef.Name != goldenName || bundle.Status.DiskImagePVCNamespace != ns {
+		bundle.Status.DiskImagePVCRef = &corev1.LocalObjectReference{Name: goldenName}
+		bundle.Status.DiskImagePVCNamespace = ns
+		if err := r.Status().Update(ctx, bundle); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating CRCBundle disk image PVC references: %w", err)
+		}
 	}
 
 	return ctrl.Result{}, nil

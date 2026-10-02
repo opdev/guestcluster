@@ -31,8 +31,8 @@ func boundCRCSource(instance *brokerv1alpha1.ClusterInstance, binding *brokerv1a
 	bundle := &brokerv1alpha1.CRCBundle{
 		Spec: brokerv1alpha1.CRCBundleSpec{StorageClassName: binding.StorageClassName},
 		Status: brokerv1alpha1.CRCBundleStatus{
-			QCOW2PVCNamespace: binding.PVCNamespace,
-			QCOW2PVCRef:       &corev1.LocalObjectReference{Name: binding.PVCName},
+			DiskImagePVCNamespace: binding.PVCNamespace,
+			DiskImagePVCRef:       &corev1.LocalObjectReference{Name: binding.PVCName},
 		},
 	}
 	return &crcDataVolumeSource{
@@ -60,15 +60,15 @@ func (r *ClusterInstanceReconciler) verifyCRCBootSource(ctx context.Context, ins
 		return nil, nil, fmt.Errorf("getting CRCBundle %s for boot key: %w", name, err)
 	}
 	s := bundle.Status
-	if s.Phase != brokerv1alpha1.CRCBundlePhaseReady || s.SHA256 == "" || s.QCOW2PVCNamespace == "" || s.QCOW2PVCRef == nil || s.QCOW2PVCRef.Name == "" || s.SSHKeySecretRef == nil || s.SSHKeySecretRef.Name == "" {
+	if s.Phase != brokerv1alpha1.CRCBundlePhaseReady || s.SHA256 == "" || s.DiskImagePVCNamespace == "" || s.DiskImagePVCRef == nil || s.DiskImagePVCRef.Name == "" || s.SSHKeySecretRef == nil || s.SSHKeySecretRef.Name == "" {
 		return nil, nil, fmt.Errorf("CRCBundle %s has invalid or incomplete Ready disk/SSH key references", name)
 	}
-	pvcKey := types.NamespacedName{Namespace: s.QCOW2PVCNamespace, Name: s.QCOW2PVCRef.Name}
+	pvcKey := types.NamespacedName{Namespace: s.DiskImagePVCNamespace, Name: s.DiskImagePVCRef.Name}
 	pvc := &corev1.PersistentVolumeClaim{}
 	if err := r.Get(ctx, pvcKey, pvc); err != nil {
 		return nil, nil, fmt.Errorf("getting CRCBundle golden PVC %s: %w", pvcKey, err)
 	}
-	secretKey := types.NamespacedName{Namespace: s.QCOW2PVCNamespace, Name: s.SSHKeySecretRef.Name}
+	secretKey := types.NamespacedName{Namespace: s.DiskImagePVCNamespace, Name: s.SSHKeySecretRef.Name}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, secretKey, secret); err != nil {
 		return nil, nil, fmt.Errorf("getting CRCBundle SSH key Secret %s: %w", secretKey, err)

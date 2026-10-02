@@ -158,11 +158,11 @@ func BuildScratchPVC(bundle *brokerv1alpha1.CRCBundle) *corev1.PersistentVolumeC
 
 // bundlePrepScript is the shell script BuildBundlePrepJob's container runs.
 // It downloads the official .crcbundle artifact and its published
-// sha256sum.txt, and verifies the checksum. It then streams the crc.qcow2
-// member directly out of the still-compressed archive into the golden PVC,
-// without a full extraction pass (see defaultScratchVolumeSize's doc
-// comment). It finally publishes the bundle's SSH private key and reported
-// OpenShift version for the CRCBundleReconciler to read back into status.
+// sha256sum.txt, and verifies the checksum. It then extracts crc.qcow2 into
+// scratch and converts it to a raw /disk.img in the golden PVC (see
+// defaultScratchVolumeSize's doc comment). It then publishes the bundle's SSH
+// private key and reported OpenShift version for the CRCBundleReconciler to
+// read back into status.
 //
 // The script requires curl, tar (with zstd support), jq, and oc on PATH.
 // This project reuses the same crc-agent image here, by design, rather
