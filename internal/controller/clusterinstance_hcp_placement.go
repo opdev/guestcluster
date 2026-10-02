@@ -31,7 +31,7 @@ import (
 )
 
 func hcpLocation(instance *brokerv1alpha1.ClusterInstance) (string, string) {
-	return instance.Namespace, resources.HostedClusterName(instance.Name)
+	return instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace)
 }
 
 func hcpNodePoolName(instance *brokerv1alpha1.ClusterInstance) string {
@@ -159,7 +159,8 @@ func (r *ClusterInstanceReconciler) verifyHCPResource(ctx context.Context, insta
 	if labels[resources.LabelManagedBy] != resources.ManagerName || labels[resources.LabelInstance] != instance.Name || labels[resources.LabelInstanceNamespace] != instance.Namespace {
 		return apiEndpointConflict("resource %s/%s has no verified ClusterInstance identity", obj.GetNamespace(), obj.GetName())
 	}
-	expectedNamespace := resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
+	namespace, name := hcpLocation(instance)
+	expectedNamespace := resources.HostedControlPlaneNamespace(namespace, name)
 	if obj.GetNamespace() != expectedNamespace {
 		return apiEndpointConflict("resource %s/%s is outside the expected control-plane namespace %s", obj.GetNamespace(), obj.GetName(), expectedNamespace)
 	}

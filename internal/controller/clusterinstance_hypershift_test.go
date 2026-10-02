@@ -124,7 +124,7 @@ func TestReconcileHyperShiftUsesLocalPullSecret(t *testing.T) {
 	if instance.Status.APIEndpoint == "" {
 		t.Fatal("first reconcile did not persist the selected API endpoint")
 	}
-	hostedClusterKey := client.ObjectKey{Name: resources.HostedClusterName(instance.Name), Namespace: instance.Namespace}
+	hostedClusterKey := client.ObjectKey{Name: resources.HostedClusterName(instance.Name, instance.Namespace), Namespace: instance.Namespace}
 	if err := c.Get(ctx, hostedClusterKey, &hyperv1beta1.HostedCluster{}); err == nil {
 		t.Fatal("HostedCluster was created before status recorded the selected API endpoint")
 	}
@@ -284,7 +284,7 @@ func createHCPWithSelectedEndpoint(t *testing.T, c client.Client, r *ClusterInst
 	if err != nil {
 		t.Fatalf("parsing selected endpoint: %v", err)
 	}
-	hcKey := client.ObjectKey{Name: resources.HostedClusterName(instance.Name), Namespace: instance.Namespace}
+	hcKey := client.ObjectKey{Name: resources.HostedClusterName(instance.Name, instance.Namespace), Namespace: instance.Namespace}
 	if err := c.Get(ctx, hcKey, &hyperv1beta1.HostedCluster{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("HostedCluster exists before endpoint status was written; get error = %v", err)
 	}
@@ -292,7 +292,7 @@ func createHCPWithSelectedEndpoint(t *testing.T, c client.Client, r *ClusterInst
 	if err := c.Get(ctx, certKey, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("KAS serving certificate exists before endpoint status was written; get error = %v", err)
 	}
-	routeKey := client.ObjectKey{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)}
+	routeKey := client.ObjectKey{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, hcKey.Name)}
 	if err := c.Get(ctx, routeKey, &routev1.Route{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("API Route exists before endpoint status was written; get error = %v", err)
 	}
@@ -426,7 +426,7 @@ func TestReadyHCPRouteDeletionTriggersRecovery(t *testing.T) {
 		Namespace: instance.Namespace, PullSecretName: statusCRCPullSecret,
 		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: hostname,
 	})
-	route := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name))
+	route := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(hc.Namespace, hc.Name))
 	route.Status.Ingress = []routev1.RouteIngress{{
 		Host:       hostname,
 		Conditions: []routev1.RouteIngressCondition{{Type: routev1.RouteAdmitted, Status: corev1.ConditionTrue}},
@@ -523,14 +523,14 @@ func TestSameNamedHCPInstancesInDifferentNamespacesGetDifferentEndpoints(t *test
 	}
 	c := newHyperShiftFakeClient(t, first, second, ingress)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	firstHostname, persist, err := r.resolveHCPAPIHostname(ctx, first, false, resources.HostedControlPlaneNamespace(first.Namespace, first.Name))
+	firstHostname, persist, err := r.resolveHCPAPIHostname(ctx, first, false, resources.HostedControlPlaneNamespace(first.Namespace, resources.HostedClusterName(first.Name, first.Namespace)))
 	if err != nil {
 		t.Fatalf("resolving first HCP endpoint: %v", err)
 	}
 	if !persist {
 		t.Fatal("first HCP endpoint was not marked for status persistence")
 	}
-	secondHostname, persist, err := r.resolveHCPAPIHostname(ctx, second, false, resources.HostedControlPlaneNamespace(second.Namespace, second.Name))
+	secondHostname, persist, err := r.resolveHCPAPIHostname(ctx, second, false, resources.HostedControlPlaneNamespace(second.Namespace, resources.HostedClusterName(second.Name, second.Namespace)))
 	if err != nil {
 		t.Fatalf("resolving second HCP endpoint: %v", err)
 	}

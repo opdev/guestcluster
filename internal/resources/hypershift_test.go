@@ -17,10 +17,12 @@ limitations under the License.
 package resources
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	routev1 "github.com/openshift/api/route/v1"
 	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
@@ -32,11 +34,79 @@ import (
 // HyperShift-related test cases, pulled out as named constants to avoid
 // repeating the same raw strings.
 const (
-	testInstanceName    = "hcp-pool-99h8d"
-	testAPIHost         = "api-hcp-pool-99h8d.apps.example.com"
-	testReleaseImage    = "quay.io/openshift-release-dev/ocp-release:4.22.10-x86_64"
-	testNodePortAddress = "api-host.example.com"
+	testInstanceName      = "hcp-pool-99h8d"
+	testAPIHost           = "api-hcp-pool-99h8d.apps.example.com"
+	testReleaseImage      = "quay.io/openshift-release-dev/ocp-release:4.22.10-x86_64"
+	testNodePortAddress   = "api-host.example.com"
+	testInstanceNamespace = "tenant"
+	testHCPName           = "a-b"
+	testGuestName         = "guest"
 )
+
+func TestHostedClusterName(t *testing.T) {
+	if got, want := HostedClusterName(testHCPName, testInstanceNamespace), "gc-a-b-5d8cb322fcdd0c0e"; got != want {
+		t.Fatalf("HostedClusterName = %q, want %q", got, want)
+	}
+	for _, tc := range []struct {
+		name      string
+		namespace string
+	}{
+		{name: testGuestName, namespace: testInstanceNamespace},
+		{name: "a.b", namespace: testInstanceNamespace},
+		{name: strings.Repeat("a", 253), namespace: testInstanceNamespace},
+		{name: testHCPName, namespace: strings.Repeat("n", 40)},
+		{name: testGuestName, namespace: strings.Repeat("n", 43)},
+	} {
+		t.Run(tc.namespace+"/"+tc.name, func(t *testing.T) {
+			name := HostedClusterName(tc.name, tc.namespace)
+			if problems := validation.IsDNS1123Label(name); len(problems) != 0 {
+				t.Fatalf("invalid HostedCluster name %q: %v", name, problems)
+			}
+			controlPlaneNamespace := HostedControlPlaneNamespace(tc.namespace, name)
+			if problems := validation.IsDNS1123Label(controlPlaneNamespace); len(problems) != 0 {
+				t.Fatalf("invalid control-plane namespace %q: %v", controlPlaneNamespace, problems)
+			}
+			if got := HostedClusterName(tc.name, tc.namespace); got != name {
+				t.Fatalf("HostedCluster name changed from %q to %q", name, got)
+			}
+		})
+	}
+}
+
+func TestHostedClusterNamesSeparateInstanceIdentities(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		firstName       string
+		firstNamespace  string
+		secondName      string
+		secondNamespace string
+	}{
+		{name: "namespace boundary", firstName: testHCPName, firstNamespace: testInstanceNamespace, secondName: "b", secondNamespace: "tenant-a"},
+		{name: "repeated hyphens", firstName: "a--b", firstNamespace: testInstanceNamespace, secondName: "b", secondNamespace: "tenant--a"},
+		{name: "dot replacement", firstName: "a.b", firstNamespace: testInstanceNamespace, secondName: testHCPName, secondNamespace: testInstanceNamespace},
+		{name: "same name in different namespaces", firstName: testGuestName, firstNamespace: "tenant-one", secondName: testGuestName, secondNamespace: "tenant-two"},
+		{name: "truncated prefix", firstName: strings.Repeat("a", 55) + "b", firstNamespace: testInstanceNamespace, secondName: strings.Repeat("a", 55) + "c", secondNamespace: testInstanceNamespace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := HostedClusterName(tc.firstName, tc.firstNamespace)
+			second := HostedClusterName(tc.secondName, tc.secondNamespace)
+			if first == second {
+				t.Fatalf("identities share HostedCluster name %q", first)
+			}
+			if HostedControlPlaneNamespace(tc.firstNamespace, first) == HostedControlPlaneNamespace(tc.secondNamespace, second) {
+				t.Fatal("identities share a control-plane namespace")
+			}
+		})
+	}
+}
+
+func TestBuildHostedClusterUsesHashedName(t *testing.T) {
+	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: testHCPName, Namespace: testInstanceNamespace}}
+	hc := BuildHostedCluster(instance, HostedClusterOptions{Namespace: instance.Namespace})
+	if hc.Name != "gc-a-b-5d8cb322fcdd0c0e" || hc.Namespace != instance.Namespace {
+		t.Fatalf("unexpected HostedCluster identity: %s/%s", hc.Namespace, hc.Name)
+	}
+}
 
 func TestHostedControlPlaneNamespace(t *testing.T) {
 	cases := []struct {
@@ -47,13 +117,13 @@ func TestHostedControlPlaneNamespace(t *testing.T) {
 	}{
 		{
 			name:         "simple names are joined with a hyphen",
-			namespace:    "tenant",
+			namespace:    testInstanceNamespace,
 			instanceName: testInstanceName,
 			want:         "tenant-hcp-pool-99h8d",
 		},
 		{
 			name:         "dots in the instance name are replaced with hyphens",
-			namespace:    "tenant",
+			namespace:    testInstanceNamespace,
 			instanceName: "my.instance.name",
 			want:         "tenant-my-instance-name",
 		},
@@ -119,7 +189,7 @@ func TestBuildHostedClusterSSHKey(t *testing.T) {
 	}
 
 	baseOpts := HostedClusterOptions{
-		Namespace:       "tenant",
+		Namespace:       testInstanceNamespace,
 		PullSecretName:  ClusterPullSecretName,
 		NodePortAddress: testNodePortAddress,
 	}
@@ -153,7 +223,7 @@ func TestBuildHostedClusterNamedCertificate(t *testing.T) {
 	}
 
 	baseOpts := HostedClusterOptions{
-		Namespace:       "tenant",
+		Namespace:       testInstanceNamespace,
 		PullSecretName:  ClusterPullSecretName,
 		NodePortAddress: testNodePortAddress,
 	}
@@ -210,7 +280,7 @@ func TestBuildHostedClusterControllerAvailabilityPolicy(t *testing.T) {
 				},
 			}
 			hc := BuildHostedCluster(instance, HostedClusterOptions{
-				Namespace:       "tenant",
+				Namespace:       testInstanceNamespace,
 				PullSecretName:  ClusterPullSecretName,
 				NodePortAddress: testNodePortAddress,
 			})
