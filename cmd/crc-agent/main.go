@@ -103,9 +103,8 @@ import (
 // additional CRDs of its own.
 type config struct {
 	Namespace      string // ClusterInstance/Secret namespace
-	InstanceName   string // ClusterInstance name; also the CRC VM name (resources.VMName)
-	InstanceUID    string // Owner UID for new Jobs; absent only on legacy Jobs.
-	VMName         string // Recorded backing name, which can differ from InstanceName.
+	InstanceName   string // ClusterInstance and CRC VM name
+	InstanceUID    string // UID of the owning ClusterInstance
 	SSHHost        string // CRC VM's reachable IP/host (populated from VMI status by the controller)
 	ExpectedVMIUID string // UID of the VMI this Job is allowed to configure
 	SSHPort        int
@@ -132,7 +131,6 @@ func configFromEnv() config {
 		Namespace:      os.Getenv("INSTANCE_NAMESPACE"),
 		InstanceName:   os.Getenv("INSTANCE_NAME"),
 		InstanceUID:    os.Getenv("INSTANCE_UID"),
-		VMName:         os.Getenv("CRC_VM_NAME"),
 		SSHHost:        os.Getenv("CRC_SSH_HOST"),
 		ExpectedVMIUID: os.Getenv("CRC_VMI_UID"),
 		SSHUser:        envDefault("CRC_SSH_USER", "core"),
@@ -174,8 +172,9 @@ func main() {
 	flag.StringVar(&cfg.ExpectedVMIUID, "vmi-uid", cfg.ExpectedVMIUID, "UID of the CRC VMI")
 	flag.Parse()
 
-	if cfg.InstanceName == "" || cfg.Namespace == "" || cfg.SSHHost == "" || cfg.ExpectedVMIUID == "" {
-		const missingConfigMsg = "INSTANCE_NAME, INSTANCE_NAMESPACE, CRC_SSH_HOST and CRC_VMI_UID " +
+	if cfg.InstanceName == "" || cfg.InstanceUID == "" || cfg.Namespace == "" ||
+		cfg.SSHHost == "" || cfg.ExpectedVMIUID == "" {
+		const missingConfigMsg = "INSTANCE_NAME, INSTANCE_UID, INSTANCE_NAMESPACE, CRC_SSH_HOST and CRC_VMI_UID " +
 			"(or their --flag equivalents) are required"
 		log.Error(fmt.Errorf("missing required configuration"), missingConfigMsg)
 		os.Exit(1)
@@ -425,14 +424,12 @@ func publishRawKubeconfig(ctx context.Context, kc kubernetes.Interface, cfg conf
 			resources.VMIUIDSecretKey:     []byte(cfg.ExpectedVMIUID),
 		},
 	}
-	if cfg.InstanceUID != "" {
-		instance := &brokerv1alpha1.ClusterInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: cfg.InstanceName, UID: types.UID(cfg.InstanceUID)},
-		}
-		secret.OwnerReferences = resources.InstanceOwnerReferences(instance)
-		// The agent does not need permission to block deletion of the owner.
-		secret.OwnerReferences[0].BlockOwnerDeletion = nil
+	instance := &brokerv1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: cfg.InstanceName, UID: types.UID(cfg.InstanceUID)},
 	}
+	secret.OwnerReferences = resources.InstanceOwnerReferences(instance)
+	// The agent does not need permission to block deletion of the owner.
+	secret.OwnerReferences[0].BlockOwnerDeletion = nil
 
 	_, err := secretsClient.Create(ctx, secret, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
@@ -441,14 +438,9 @@ func publishRawKubeconfig(ctx context.Context, kc kubernetes.Interface, cfg conf
 			return getErr
 		}
 		owner := metav1.GetControllerOf(existing)
-		if cfg.InstanceUID != "" && (owner == nil || owner.Kind != "ClusterInstance" ||
-			owner.Name != cfg.InstanceName || string(owner.UID) != cfg.InstanceUID) {
+		if owner == nil || owner.Kind != "ClusterInstance" ||
+			owner.Name != cfg.InstanceName || string(owner.UID) != cfg.InstanceUID {
 			return fmt.Errorf("raw kubeconfig Secret %s/%s belongs to another owner", cfg.Namespace, name)
-		}
-		if cfg.InstanceUID == "" && (len(existing.OwnerReferences) != 0 ||
-			existing.Labels[resources.LabelInstance] != cfg.InstanceName ||
-			existing.Labels[resources.LabelManagedBy] != "crc-agent") {
-			return fmt.Errorf("legacy raw kubeconfig Secret %s/%s has no verified agent identity", cfg.Namespace, name)
 		}
 		if reflect.DeepEqual(existing.Data, secret.Data) && existing.Type == secret.Type {
 			return nil

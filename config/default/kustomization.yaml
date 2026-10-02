@@ -14,11 +14,9 @@ namePrefix: guestcluster-operator-
 #  pairs:
 #    someName: someValue
 
-# Propagates the actual (post namePrefix) ServiceAccount names into the
-# manager Deployment's environment, so internal/resources.BundlePrepServiceAccount
-# and CRCAgentServiceAccount don't have to guess/hardcode a name that must
-# otherwise be kept in sync by hand with config/rbac's namePrefix-transformed
-# ServiceAccount objects.
+# Propagates the actual (post namePrefix) bundle-prep ServiceAccount name into
+# the manager Deployment, so BundlePrepServiceAccount does not depend on a
+# manually synchronized name.
 replacements:
 - source:
     kind: ServiceAccount
@@ -30,16 +28,6 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=BUNDLE_PREP_SERVICE_ACCOUNT].value
-- source:
-    kind: ServiceAccount
-    name: crc-agent
-    fieldPath: metadata.name
-  targets:
-  - select:
-      kind: Deployment
-      name: controller-manager
-    fieldPaths:
-    - spec.template.spec.containers.[name=manager].env.[name=CRC_AGENT_SERVICE_ACCOUNT].value
 - source:
     kind: ClusterRole
     name: crc-agent-instance-role

@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -50,8 +49,6 @@ type hypershiftResult struct {
 	ocpVersion         string
 	apiEndpoint        string
 	kubeconfig         []byte
-	hostedClusterName  string
-	nodePoolNames      []string
 }
 
 // managementNodeAddress returns the InternalIP of a Ready, schedulable node
@@ -118,19 +115,14 @@ func desiredReplicas(instance *brokerv1alpha1.ClusterInstance) int32 {
 	return 1
 }
 
-// resolveHCPWorkerSSHKey uses a local input directly, or copies it for a legacy
-// cross-namespace HostedCluster under resources.HCPWorkerSSHKeyName. It validates
-// that it carries the data key HyperShift itself requires. targetNamespace
-// must be the HostedCluster's own namespace, because HostedCluster.spec.sshKey
-// is a LocalObjectReference resolved relative to the HostedCluster itself;
-// a Secret living in the operator's namespace cannot be referenced
-// directly.
+// resolveHCPWorkerSSHKey validates the optional local Secret and returns its
+// name. HostedClusters live in the same namespace as the ClusterInstance.
 //
 // Unlike resolvePullSecret, there is no cluster-wide default to fall back
 // to: this is an opt-in debugging convenience (see HCPWorkerSSHKeyRef's doc
 // comment). An unset ref returns "" rather than an error, and
 // BuildHostedCluster then leaves HostedCluster.spec.sshKey unset.
-func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, targetNamespace string) (string, error) {
+func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (string, error) {
 	ref := instance.Spec.Template.HCPWorkerSSHKeyRef
 	if ref == nil || ref.Name == "" {
 		return "", nil
@@ -147,32 +139,7 @@ func (r *ClusterInstanceReconciler) resolveHCPWorkerSSHKey(ctx context.Context, 
 	if !ok || len(data) == 0 {
 		return "", fmt.Errorf("HCP worker SSH key secret %s/%s is missing data key %q", instance.Namespace, ref.Name, resources.HCPWorkerSSHKeyDataKey)
 	}
-	if targetNamespace == instance.Namespace {
-		return ref.Name, nil
-	}
-
-	copyName := resources.HCPWorkerSSHKeyName(instance.Name)
-	desired := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      copyName,
-			Namespace: targetNamespace,
-			Labels:    resources.CommonLabels(instance),
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{resources.HCPWorkerSSHKeyDataKey: data},
-	}
-	desired.Labels = resources.APIEndpointLabels(instance)
-
-	changed := func(existing *corev1.Secret) bool {
-		return !bytes.Equal(existing.Data[resources.HCPWorkerSSHKeyDataKey], data)
-	}
-	if err := r.upsertSecret(ctx, desired, changed, func(existing *corev1.Secret) error {
-		return r.verifyHCPResource(ctx, instance, existing)
-	}); err != nil {
-		return "", err
-	}
-
-	return copyName, nil
+	return ref.Name, nil
 }
 
 // ensureKASServingCert gets or creates the kubernetes.io/tls Secret (in
@@ -247,34 +214,24 @@ func (r *ClusterInstanceReconciler) ensureKASServingCert(ctx context.Context, in
 	return secretName, certPEM, nil
 }
 
-// resolveHCPAPIHostname selects the endpoint once and recovers it from the
-// HostedCluster, Route, or serving certificate if older status did not record
-// it. It returns persist=true when status must be written before any resource
-// that depends on the endpoint is created.
+// resolveHCPAPIHostname selects and records the endpoint before any resource
+// that depends on it is created. An existing HostedCluster needs its recorded
+// endpoint so the controller does not change its identity.
 func (r *ClusterInstanceReconciler) resolveHCPAPIHostname(
 	ctx context.Context,
 	instance *brokerv1alpha1.ClusterInstance,
-	hostedCluster *hyperv1beta1.HostedCluster,
 	hostedClusterExists bool,
 	hcpNamespace string,
 ) (hostname string, persist bool, err error) {
-	evidence, err := r.existingHCPAPIHostname(ctx, instance, hostedCluster, hostedClusterExists, hcpNamespace)
-	if err != nil {
-		return "", false, err
-	}
-
 	if instance.Status.APIEndpoint != "" {
-		statusHostname, parseErr := apiEndpointHostname(instance.Status.APIEndpoint)
-		if parseErr != nil {
-			return "", false, parseErr
+		hostname, err = apiEndpointHostname(instance.Status.APIEndpoint)
+		if err != nil {
+			return "", false, err
 		}
-		if evidence != "" && evidence != statusHostname {
-			return "", false, apiEndpointConflict("stored API endpoint %q conflicts with existing resource hostname %q", statusHostname, evidence)
-		}
-		hostname = statusHostname
-	} else if evidence != "" {
-		hostname = evidence
 	} else {
+		if hostedClusterExists {
+			return "", false, apiEndpointConflict("HostedCluster exists without a recorded API endpoint")
+		}
 		domain, domainErr := r.mgmtIngressDomain(ctx)
 		if domainErr != nil {
 			return "", false, fmt.Errorf("resolving management cluster ingress domain: %w", domainErr)
@@ -301,66 +258,6 @@ func (r *ClusterInstanceReconciler) resolveHCPAPIHostname(
 	return hostname, false, nil
 }
 
-func (r *ClusterInstanceReconciler) existingHCPAPIHostname(
-	ctx context.Context,
-	instance *brokerv1alpha1.ClusterInstance,
-	hostedCluster *hyperv1beta1.HostedCluster,
-	hostedClusterExists bool,
-	hcpNamespace string,
-) (string, error) {
-	var evidence string
-	if hostedClusterExists {
-		var names []string
-		if configuration := hostedCluster.Spec.Configuration; configuration != nil && configuration.APIServer != nil {
-			for _, namedCert := range configuration.APIServer.ServingCerts.NamedCertificates {
-				if namedCert.ServingCertificate.Name == resources.KASServingCertName(instance.Name) {
-					names = append(names, namedCert.Names...)
-				}
-			}
-		}
-		if len(names) != 1 || names[0] == "" {
-			return "", apiEndpointConflict("HostedCluster %s/%s does not have exactly one named certificate for its external API endpoint", hostedCluster.Namespace, hostedCluster.Name)
-		}
-		if err := ensureHostnameEvidenceMatches(names[0], "HostedCluster named certificate", &evidence); err != nil {
-			return "", err
-		}
-	}
-
-	hostedClusterNamespace, _ := hcpLocation(instance)
-	if hostedClusterExists && hostedCluster.Namespace != "" {
-		hostedClusterNamespace = hostedCluster.Namespace
-	}
-	certHostname, certExists, err := r.getServingCertHostname(ctx, instance, hostedClusterNamespace, resources.KASServingCertName(instance.Name))
-	if err != nil {
-		return "", err
-	}
-	if hostedClusterExists && !certExists {
-		return "", apiEndpointConflict("KAS serving certificate Secret %s/%s referenced by HostedCluster %s/%s is missing", hostedClusterNamespace, resources.KASServingCertName(instance.Name), hostedCluster.Namespace, hostedCluster.Name)
-	}
-	if certExists {
-		if err := ensureHostnameEvidenceMatches(certHostname, "KAS serving certificate", &evidence); err != nil {
-			return "", err
-		}
-	}
-
-	routeKey := types.NamespacedName{Name: resources.HostedClusterAPIRouteName(instance.Name), Namespace: hcpNamespace}
-	existingRoute := &routev1.Route{}
-	if err := r.Get(ctx, routeKey, existingRoute); err == nil {
-		if !routeOwnedByInstance(existingRoute, instance) {
-			return "", apiEndpointConflict("HostedCluster API Route %s/%s is not labelled for ClusterInstance %s/%s", routeKey.Namespace, routeKey.Name, instance.Namespace, instance.Name)
-		}
-		if existingRoute.Spec.Host == "" {
-			return "", apiEndpointConflict("HostedCluster API Route %s/%s has an empty host", routeKey.Namespace, routeKey.Name)
-		}
-		if err := ensureHostnameEvidenceMatches(existingRoute.Spec.Host, "HostedCluster API Route", &evidence); err != nil {
-			return "", err
-		}
-	} else if !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("getting HostedCluster API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
-	}
-	return evidence, nil
-}
-
 func (r *ClusterInstanceReconciler) checkGuestAPIReadiness(ctx context.Context, kubeconfig []byte) error {
 	if r.GuestAPIReadinessCheck != nil {
 		return r.GuestAPIReadinessCheck(ctx, kubeconfig)
@@ -369,18 +266,8 @@ func (r *ClusterInstanceReconciler) checkGuestAPIReadiness(ctx context.Context, 
 }
 
 // reconcileReadyHyperShift preserves Ready only while the recorded external
-// API endpoint still has its verified Route. It also recovers old Ready
-// instances whose status did not record the endpoint.
+// API endpoint still has its verified Route.
 func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
-	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		var conflict apiEndpointConflictError
-		if errors.As(err, &conflict) {
-			return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
-		}
-		return ctrl.Result{}, err
-	} else if recorded {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
-	}
 	hostedClusterNamespace, hostedClusterName := hcpLocation(instance)
 	hostedCluster := &hyperv1beta1.HostedCluster{}
 	hostedClusterKey := types.NamespacedName{Name: hostedClusterName, Namespace: hostedClusterNamespace}
@@ -401,7 +288,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyHyperShift(ctx context.Context
 	}
 	hcpNamespace := resources.HostedControlPlaneNamespace(hostedClusterNamespace, hostedClusterName)
 	previousStatus := instance.Status.DeepCopy()
-	hostname, persistEndpoint, err := r.resolveHCPAPIHostname(ctx, instance, hostedCluster, true, hcpNamespace)
+	hostname, persistEndpoint, err := r.resolveHCPAPIHostname(ctx, instance, true, hcpNamespace)
 	if err != nil {
 		var endpointConflict apiEndpointConflictError
 		if errors.As(err, &endpointConflict) {
@@ -519,18 +406,15 @@ func (r *ClusterInstanceReconciler) ensureHostedClusterAPIRoute(ctx context.Cont
 func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, pullSecretName string) (hypershiftResult, error) {
 	log := logf.FromContext(ctx)
 	namespace, hcName := hcpLocation(instance)
-	res := hypershiftResult{
-		hostedClusterName: hcName,
-		nodePoolNames:     []string{hcpNodePoolName(instance)},
-	}
+	res := hypershiftResult{}
 
 	// Get the HostedCluster first, before resolving any of the other
 	// inputs BuildHostedCluster needs. Those inputs (the management node
-	// address for NodePort.Address, and the worker SSH key copy) are
+	// address for NodePort.Address, and the worker SSH key) are
 	// consumed only at HostedCluster creation time and never revisited
 	// afterward. So once the HostedCluster exists, later reconciles that
 	// poll for readiness do not need to pay for a cluster-wide Node List
-	// or a Secret Get/copy on every pass.
+	// or a Secret Get on every pass.
 	existingHC := &hyperv1beta1.HostedCluster{}
 	getHCErr := r.Get(ctx, types.NamespacedName{Name: hcName, Namespace: namespace}, existingHC)
 	if getHCErr != nil && !apierrors.IsNotFound(getHCErr) {
@@ -543,7 +427,10 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 		}
 	}
 	hcpNamespace := resources.HostedControlPlaneNamespace(namespace, hcName)
-	apiServerHostname, endpointNeedsPersist, err := r.resolveHCPAPIHostname(ctx, instance, existingHC, hostedClusterExists, hcpNamespace)
+	if err := r.checkHCPPlacement(ctx, instance); err != nil {
+		return res, err
+	}
+	apiServerHostname, endpointNeedsPersist, err := r.resolveHCPAPIHostname(ctx, instance, hostedClusterExists, hcpNamespace)
 	if err != nil {
 		return res, err
 	}
@@ -685,7 +572,7 @@ func (r *ClusterInstanceReconciler) createHostedCluster(ctx context.Context, ins
 	if err != nil {
 		return fmt.Errorf("resolving NodePort.Address for HostedCluster APIServer service: %w", err)
 	}
-	sshKeySecretName, err := r.resolveHCPWorkerSSHKey(ctx, instance, namespace)
+	sshKeySecretName, err := r.resolveHCPWorkerSSHKey(ctx, instance)
 	if err != nil {
 		return fmt.Errorf("resolving HCP worker SSH key: %w", err)
 	}
@@ -719,9 +606,6 @@ func (r *ClusterInstanceReconciler) createHostedCluster(ctx context.Context, ins
 // operator/CSV state survives between lease holders, matching the
 // acceptance requirement.
 func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (bool, error) {
-	if recorded, err := r.recordHCPPlacement(ctx, instance); recorded || err != nil {
-		return recorded, err
-	}
 	pending := false
 	deleteObject := func(obj client.Object, label string) error {
 		if _, pod := obj.(*corev1.Pod); !pod {
@@ -763,35 +647,8 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 		return false, err
 	}
 
-	// resolvePullSecret materializes the per-instance pull-secret copy in the
-	// HostedCluster's namespace whenever the source and target namespaces
-	// differ. That copy cannot carry an owner reference across namespaces, so
-	// it is not garbage-collected automatically like the same-namespace crc
-	// copy is. Delete it explicitly here.
-	pullSecretName := resources.DefaultPullSecretName(instance.Name)
-	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pullSecretName, Namespace: namespace}}
-	if namespace != instance.Namespace {
-		if err := deleteObject(pullSecret, "pull secret copy"); err != nil {
-			return false, err
-		}
-	}
-
-	// The same cross-namespace reasoning as the pull secret copy above
-	// applies: resolveHCPWorkerSSHKey's copy cannot carry an owner
-	// reference across namespaces, so delete it explicitly. This is a
-	// harmless no-op (NotFound) when HCPWorkerSSHKeyRef was never set for
-	// this instance.
-	sshKeyName := resources.HCPWorkerSSHKeyName(instance.Name)
-	sshKeySecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sshKeyName, Namespace: namespace}}
-	if namespace != instance.Namespace {
-		if err := deleteObject(sshKeySecret, "HCP worker SSH key copy"); err != nil {
-			return false, err
-		}
-	}
-
-	// The same cross-namespace reasoning as the pull secret and SSH key
-	// copies above applies: ensureKASServingCert's Secret cannot carry an
-	// owner reference across namespaces, so delete it explicitly.
+	// The serving certificate has an instance owner reference but is deleted
+	// explicitly before the finalizer completes.
 	servingCertName := resources.KASServingCertName(instance.Name)
 	servingCertSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: servingCertName, Namespace: namespace}}
 	if err := deleteObject(servingCertSecret, "KAS serving certificate"); err != nil {

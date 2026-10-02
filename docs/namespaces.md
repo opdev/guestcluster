@@ -87,35 +87,18 @@ outside the terminating source namespace.
 
 ## Upgrade behavior
 
-1. Install the updated CRDs, manager permissions, manager image, and agent image
-   together, through direct manifests or an OLM bundle.
-2. Label each source namespace where new capacity is required. Include the
-   operator namespace if it contains pools.
-3. Check `ProvisioningAllowed` on pools and instances. Verify that active
-   instances retain their endpoints and backing locations.
+This release does not adopt backing resources created by earlier versions.
+Delete or replace those `ClusterInstance` objects before you use this release.
+Wait for CRC agent Jobs to finish before you remove the old shared CRC agent
+account and its Role and RoleBinding.
 
-The operator verifies existing backing-resource identity before recording a
-legacy authorization. Local UID owners provide identity for current resources.
-Older CRC resources need matching managed-resource labels and creation times
-that do not precede the instance. Conflicting owner UIDs are rejected. Older
-HCP resources use the recorded or verified legacy source identity. Ambiguous
-legacy identity produces a `LegacyIdentityConflict` condition.
+Install the updated CRDs, manager permissions, manager image, and agent image
+together, through direct manifests or an OLM bundle. Label each source namespace
+where new capacity is required. Include the operator namespace if it contains
+pools. Check `ProvisioningAllowed` on pools and instances.
 
-Existing HCP resources in `clusters` remain there. Their copied input Secrets
-retain explicit cleanup. New HCP resources use the source namespace. Existing
-CRC and HCP endpoints remain fixed across ingress-domain changes. CRC recovery
-retains the recorded endpoint and checks it against the existing Route and
-identity certificate.
-
-Old CRC agent Jobs retain their immutable account and volume settings. The old
-shared account and binding must remain installed until those Jobs finish.
-Verified running legacy CRC instances can continue health checks without a new
-boot-key binding, and existing Jobs can complete. If a pre-binding legacy disk
-needs a new Job, the operator reports `BootKeyUnavailable` rather than selecting
-a potentially different key from a re-prepared bundle. A Secret name alone
-cannot verify that old disk/key pair. Keep the original binding when available;
-otherwise replace the instance when new provisioning is enabled. Never invent
-a binding from the current bundle to bypass this check.
+HCP resources use the source namespace. CRC and HCP resources require current
+owner references. The operator rejects resources without a verified owner.
 
 ## Permissions and conditions
 
@@ -130,15 +113,15 @@ namespace, and read/watch VMIs there. Per-instance accounts separate resource
 lifetimes; they do not provide Secret isolation within the same namespace.
 Use separate namespaces for that boundary. See [CRC agent RBAC](crc-agent-rbac.md).
 
-`NamespaceDisabled`, `NamespaceTerminating`, and `LegacyIdentityConflict` are
-policy or identity conditions. They are distinct from `CRCAgent` Job and handoff
-diagnostics. Check the condition message before investigating agent Pod logs.
+`NamespaceDisabled` and `NamespaceTerminating` are policy conditions. They are
+distinct from `CRCAgent` Job and handoff diagnostics. Check the condition
+message before investigating agent Pod logs.
 
 ## Test coverage and OpenShift regression tests
 
 `make test` includes policy transitions, persisted authorization, status-write
 failures, namespace watch delivery, lease behavior, ownership conflicts,
-dependent cleanup, legacy Job compatibility, and endpoint tests. Real envtest
+dependent cleanup, and endpoint tests. Real envtest
 authorization tests exercise both direct-install and generated OLM manager
 rules, agent Secret operations, and cross-namespace denial.
 

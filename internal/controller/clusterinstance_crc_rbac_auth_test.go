@@ -73,7 +73,7 @@ var _ = Describe("CRC agent installed authorization", func() {
 		agentRole.Name = resources.CRCAgentClusterRole()
 		Expect(k8sClient.Create(ctx, managerRole)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, managerRole); _ = k8sClient.Delete(ctx, agentRole) })
-		managerBinding := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: managerUserName}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: managerRole.Name}, Subjects: []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: managerUserName}}}
+		managerBinding := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: managerUserName}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: crcAgentRoleKind, Name: managerRole.Name}, Subjects: []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: managerUserName}}}
 		Expect(k8sClient.Create(ctx, managerBinding)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, managerBinding) })
 		one := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-rbac-one-" + mode}}

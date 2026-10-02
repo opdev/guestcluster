@@ -16,8 +16,3 @@ The account can read and watch VirtualMachineInstances and get, create, and
 update Secrets **throughout its namespace**. Separate accounts control the
 lifetime of access, but do not limit Secret access to one instance. Limiting
 access to named Secrets needs a different agent handoff protocol.
-
-Earlier Jobs keep their immutable Pod templates and use the old shared account.
-The old account, Role, and RoleBinding remain installed so those Jobs can
-finish. Remove the old objects only after no legacy Jobs use the account.
-`CRC_AGENT_SERVICE_ACCOUNT` still names that legacy account.

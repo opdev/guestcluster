@@ -7,13 +7,10 @@ import (
 
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 	"github.com/opdev/guestcluster/internal/resources"
-	hyperv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kubevirtv1 "kubevirt.io/api/core/v1"
-	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -32,14 +29,7 @@ func testProvisioningAuthorization() *brokerv1alpha1.ProvisioningAuthorization {
 
 func policyClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
-	c := newHyperShiftFakeClient(t, objects...)
-	if err := kubevirtv1.AddToScheme(c.Scheme()); err != nil {
-		t.Fatal(err)
-	}
-	if err := cdiv1beta1.AddToScheme(c.Scheme()); err != nil {
-		t.Fatal(err)
-	}
-	return c
+	return newHyperShiftFakeClient(t, objects...)
 }
 
 func TestNamespaceProvisioningTransitions(t *testing.T) {
@@ -73,7 +63,7 @@ func TestNamespaceProvisioningTransitions(t *testing.T) {
 			if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
 				t.Fatal(err)
 			}
-			if instance.Status.Provisioning == nil || instance.Status.Provisioning.Legacy {
+			if instance.Status.Provisioning == nil {
 				t.Fatal("authorization not persisted")
 			}
 			// Opt-out after authorization but before any backing write is durable.
@@ -113,39 +103,6 @@ func TestNamespaceAuthorizationRequiresSuccessfulStatusWrite(t *testing.T) {
 	r.APIReader = unavailableHCPReader{Reader: c}
 	if _, err := r.gateNamespaceProvisioning(ctx, instance); err == nil {
 		t.Fatal("failed namespace read authorized provisioning")
-	}
-}
-
-func TestLegacyProvisioningNeedsVerifiedBacking(t *testing.T) {
-	ctx := context.Background()
-	for _, topology := range []brokerv1alpha1.ClusterTopology{brokerv1alpha1.TopologyCRC, brokerv1alpha1.TopologyHCP} {
-		t.Run(string(topology), func(t *testing.T) {
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: pullSecretTestNamespace}}
-			instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: ns.Name, UID: crcTestInstanceUID}, Spec: brokerv1alpha1.ClusterInstanceSpec{Type: topology}, Status: brokerv1alpha1.ClusterInstanceStatus{Phase: brokerv1alpha1.PhaseProvisioning}}
-			c := policyClient(t, ns, instance)
-			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-			if _, err := r.gateNamespaceProvisioning(ctx, instance); err != nil {
-				t.Fatal(err)
-			}
-			if instance.Status.Provisioning != nil {
-				t.Fatal("phase alone authorized legacy work")
-			}
-			instance.Spec.Template = verificationTemplateFor(topology)
-			var backing client.Object = resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
-			backing.SetOwnerReferences(nil)
-			if topology == brokerv1alpha1.TopologyHCP {
-				backing = &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: resources.DefaultHostedClusterNamespace, Labels: resources.CommonLabels(instance)}}
-			}
-			if err := c.Create(ctx, backing); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := r.gateNamespaceProvisioning(ctx, instance); err != nil {
-				t.Fatal(err)
-			}
-			if instance.Status.Provisioning == nil || !instance.Status.Provisioning.Legacy {
-				t.Fatalf("verified legacy backing blocked: %+v", instance.Status)
-			}
-		})
 	}
 }
 

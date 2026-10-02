@@ -47,15 +47,15 @@ func TestHostedControlPlaneNamespace(t *testing.T) {
 	}{
 		{
 			name:         "simple names are joined with a hyphen",
-			namespace:    DefaultHostedClusterNamespace,
+			namespace:    "tenant",
 			instanceName: testInstanceName,
-			want:         "clusters-hcp-pool-99h8d",
+			want:         "tenant-hcp-pool-99h8d",
 		},
 		{
 			name:         "dots in the instance name are replaced with hyphens",
-			namespace:    DefaultHostedClusterNamespace,
+			namespace:    "tenant",
 			instanceName: "my.instance.name",
-			want:         "clusters-my-instance-name",
+			want:         "tenant-my-instance-name",
 		},
 	}
 
@@ -82,7 +82,7 @@ func TestBuildHostedClusterAPIRoute(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
 	}
 	host := testAPIHost
-	hcpNamespace := "clusters-hcp-pool-99h8d"
+	hcpNamespace := "tenant-hcp-pool-99h8d"
 
 	route := BuildHostedClusterAPIRoute(instance, host, hcpNamespace)
 
@@ -119,7 +119,7 @@ func TestBuildHostedClusterSSHKey(t *testing.T) {
 	}
 
 	baseOpts := HostedClusterOptions{
-		Namespace:       DefaultHostedClusterNamespace,
+		Namespace:       "tenant",
 		PullSecretName:  ClusterPullSecretName,
 		NodePortAddress: testNodePortAddress,
 	}
@@ -133,10 +133,10 @@ func TestBuildHostedClusterSSHKey(t *testing.T) {
 
 	t.Run("non-empty sshKeySecretName sets HostedCluster.Spec.SSHKey", func(t *testing.T) {
 		opts := baseOpts
-		opts.SSHKeySecretName = "hcp-pool-99h8d-hcp-ssh-key"
+		opts.SSHKeySecretName = "worker-ssh-key"
 		hc := BuildHostedCluster(instance, opts)
-		if hc.Spec.SSHKey.Name != "hcp-pool-99h8d-hcp-ssh-key" {
-			t.Errorf("Spec.SSHKey.Name = %q, want %q", hc.Spec.SSHKey.Name, "hcp-pool-99h8d-hcp-ssh-key")
+		if hc.Spec.SSHKey.Name != "worker-ssh-key" {
+			t.Errorf("Spec.SSHKey.Name = %q, want %q", hc.Spec.SSHKey.Name, "worker-ssh-key")
 		}
 	})
 }
@@ -153,7 +153,7 @@ func TestBuildHostedClusterNamedCertificate(t *testing.T) {
 	}
 
 	baseOpts := HostedClusterOptions{
-		Namespace:       DefaultHostedClusterNamespace,
+		Namespace:       "tenant",
 		PullSecretName:  ClusterPullSecretName,
 		NodePortAddress: testNodePortAddress,
 	}
@@ -210,7 +210,7 @@ func TestBuildHostedClusterControllerAvailabilityPolicy(t *testing.T) {
 				},
 			}
 			hc := BuildHostedCluster(instance, HostedClusterOptions{
-				Namespace:       DefaultHostedClusterNamespace,
+				Namespace:       "tenant",
 				PullSecretName:  ClusterPullSecretName,
 				NodePortAddress: testNodePortAddress,
 			})

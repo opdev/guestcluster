@@ -160,7 +160,6 @@ func TestReconcileReadyHCPProjectsLeaseWhenDependenciesFail(t *testing.T) {
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 		Status:     brokerv1alpha1.ClusterInstanceStatus{Phase: brokerv1alpha1.PhaseReady},
 	}
-	setLegacyHCPTestPlacement(instance)
 	lease := &brokerv1alpha1.ClusterLease{
 		ObjectMeta: metav1.ObjectMeta{Name: "lease", Namespace: testNamespace},
 		Status:     brokerv1alpha1.ClusterLeaseStatus{InstanceRef: &corev1.LocalObjectReference{Name: instance.Name}},
@@ -186,7 +185,6 @@ func TestReconcileDeletionBypassesPlatformGate(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "deleting-hcp", Namespace: testNamespace, Finalizers: []string{instanceFinalizer}, DeletionTimestamp: &deletionTime},
 		Spec:       brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
-	setLegacyHCPTestPlacement(instance)
 	c := newPlatformFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
@@ -210,12 +208,12 @@ func TestReconcileDeletionWaitsForBackingResourceTeardown(t *testing.T) {
 		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
 	backing := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
-		Name:       resources.HostedClusterName(instance.Name),
-		Namespace:  resources.DefaultHostedClusterNamespace,
-		Finalizers: []string{"test.example.com/backing-cleanup"},
-		Labels:     resources.CommonLabels(instance),
+		Name:            resources.HostedClusterName(instance.Name),
+		Namespace:       instance.Namespace,
+		Finalizers:      []string{"test.example.com/backing-cleanup"},
+		Labels:          resources.APIEndpointLabels(instance),
+		OwnerReferences: resources.InstanceOwnerReferences(instance),
 	}}
-	setLegacyHCPTestPlacement(instance)
 	c := newPlatformFakeClient(t, instance, backing)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme(), APIReader: c}
 	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)}

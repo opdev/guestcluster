@@ -436,8 +436,6 @@ spec:
                       fieldPath: metadata.namespace
                 - name: BUNDLE_PREP_SERVICE_ACCOUNT
                   value: guestcluster-operator-bundle-prep
-                - name: CRC_AGENT_SERVICE_ACCOUNT
-                  value: guestcluster-operator-crc-agent
                 - name: CRC_AGENT_CLUSTER_ROLE
                   value: guestcluster-operator-crc-agent-instance-role
                 image: opdev.io/guestcluster-operator:latest

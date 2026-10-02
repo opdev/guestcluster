@@ -312,7 +312,7 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 		return *result, err
 	}
 
-	pullSecretName, err := r.resolvePullSecret(ctx, instance, instance.Namespace)
+	pullSecretName, err := r.resolvePullSecret(ctx, instance)
 	if err != nil {
 		return r.markFailedWithReason(ctx, instance, "InvalidPullSecret", err)
 	}
@@ -346,8 +346,6 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 		return r.markFailed(ctx, instance, err)
 	}
 
-	instance.Status.CRC.VMName = res.vmName
-	instance.Status.CRC.DataVolumeName = res.dvName
 	instance.Status.CRC.SSHEndpoint = res.sshEndpoint
 	instance.Status.CRC.VMIUID = res.vmiUID
 
@@ -384,23 +382,8 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 }
 
 func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
-	if recorded, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		var conflict apiEndpointConflictError
-		if errors.As(err, &conflict) {
-			return r.markFailedWithReason(ctx, instance, "HCPPlacementConflict", err)
-		}
-		return ctrl.Result{}, err
-	} else if recorded {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
-	}
 	previousStatus := instance.Status.DeepCopy()
-	// Use the recorded location for both local instances and legacy clusters.
-	namespace, _ := hcpLocation(instance)
-	if err := r.ensureNamespace(ctx, namespace); err != nil {
-		return r.markFailedWithReason(ctx, instance, "NamespaceEnsureFailed", err)
-	}
-
-	pullSecretName, err := r.resolvePullSecret(ctx, instance, namespace)
+	pullSecretName, err := r.resolvePullSecret(ctx, instance)
 	if err != nil {
 		return r.markFailedWithReason(ctx, instance, "InvalidPullSecret", err)
 	}
@@ -412,12 +395,6 @@ func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, ins
 			return r.markFailedWithReason(ctx, instance, "APIEndpointConflict", err)
 		}
 		return r.markFailed(ctx, instance, err)
-	}
-
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterName:      res.hostedClusterName,
-		HostedClusterNamespace: namespace,
-		NodePoolNames:          res.nodePoolNames,
 	}
 
 	if !res.ready {
@@ -474,31 +451,13 @@ func (r *ClusterInstanceReconciler) markReady(ctx context.Context, instance *bro
 		return ctrl.Result{}, fmt.Errorf("setting owner reference on kubeconfig secret %s/%s: %w", instance.Namespace, secretName, err)
 	}
 
-	// changed also covers a missing owner reference, so secrets created
-	// before owner-reference support was added still get backfilled once.
 	verifyKubeconfig := func(existing *corev1.Secret) error { return r.verifyCRCResource(ctx, instance, existing) }
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
-		verifyKubeconfig = func(existing *corev1.Secret) error {
-			for _, owner := range existing.OwnerReferences {
-				if owner.Kind == clusterInstanceKind && owner.Name == instance.Name && owner.UID == instance.UID {
-					return nil
-				}
-			}
-			// Older published kubeconfigs did not have an owner reference.
-			// Only a recorded Ready instance can claim its labelled Secret.
-			if len(existing.OwnerReferences) == 0 && instance.Status.Phase == brokerv1alpha1.PhaseReady &&
-				instance.Status.KubeconfigSecretRef.Name == secretName && instance.Status.APIEndpoint != "" &&
-				existing.Labels[resources.LabelManagedBy] == resources.ManagerName &&
-				existing.Labels[resources.LabelInstance] == instance.Name {
-				return nil
-			}
-			return apiEndpointConflict("kubeconfig Secret %s/%s is not owned by ClusterInstance %s/%s", instance.Namespace, secretName, instance.Namespace, instance.Name)
-		}
+		verifyKubeconfig = func(existing *corev1.Secret) error { return r.verifyHCPResource(ctx, instance, existing) }
 	}
 	if err := r.upsertSecret(ctx, secret, func(existing *corev1.Secret) bool {
 		return !bytes.Equal(existing.Data[resources.KubeconfigSecretKey], kubeconfig) ||
-			string(existing.Data[resources.OCPVersionSecretKey]) != ocpVersion ||
-			len(existing.OwnerReferences) == 0
+			string(existing.Data[resources.OCPVersionSecretKey]) != ocpVersion
 	}, verifyKubeconfig); err != nil {
 		return ctrl.Result{}, fmt.Errorf("upserting kubeconfig secret %s/%s: %w", instance.Namespace, secretName, err)
 	}
@@ -584,52 +543,26 @@ func (r *ClusterInstanceReconciler) markFailedWithReason(ctx context.Context, in
 	return ctrl.Result{}, cause
 }
 
-// ensureNamespace guarantees that the namespace named name exists, creating
-// it if necessary. name is caller-supplied (e.g.
-// resources.DefaultHostedClusterNamespace for hcp backing objects) rather
-// than hardcoded here, since callers may target different namespaces.
-func (r *ClusterInstanceReconciler) ensureNamespace(ctx context.Context, name string) error {
-	ns := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, ns); err == nil {
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("getting namespace %s: %w", name, err)
-	}
-
-	ns = &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-	if err := r.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating namespace %s: %w", name, err)
-	}
-	return nil
-}
-
-// resolvePullSecret returns the name (in targetNamespace) of the Secret to
-// use as instance's pull-secret, and materializes it there if necessary.
+// resolvePullSecret returns the name of the Secret to use as instance's
+// pull-secret.
 //
 // If Template.PullSecretRef is set, resolvePullSecret uses that Secret
 // (which must exist in instance.Namespace and carry the dockerconfigjson
-// data key) directly when targetNamespace is the instance namespace. When
-// targetNamespace differs, it copies the Secret there under the deterministic
-// per-instance name. This is the explicit-override path, for example for
+// data key) directly. This is the explicit-override path, for example for
 // disconnected or mirrored registries that need a narrower or different
 // credential.
 //
 // If Template.PullSecretRef is unset, the operator uses the Secret named
 // resources.ClusterPullSecretName in instance.Namespace. An administrator or
 // pool creator must provide this Secret, for example by copying credentials
-// from the management cluster. For a different target namespace, such as the
-// HyperShift HostedCluster namespace, resolvePullSecret materializes a copy
-// under resources.DefaultPullSecretName(instance.Name), kept up to date on
-// drift, so downstream consumers always reference a concrete Secret in their
-// own namespace.
+// from the management cluster. HCP backing resources use the same namespace,
+// so the Secret does not need a copy.
 //
 // reconcileCRC and reconcileHyperShift check this before creating any
 // backing objects, so misconfiguration (missing ref or namespace default)
 // surfaces immediately as Phase=Failed rather than a late, opaque provisioning
 // error.
-func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, targetNamespace string) (string, error) {
+func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (string, error) {
 	ref := instance.Spec.Template.PullSecretRef
 	secretName := ref.Name
 	if secretName == "" {
@@ -657,46 +590,7 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 		}
 		return "", fmt.Errorf("pull secret %s/%s is missing data key %q", instance.Namespace, secretName, resources.PullSecretDataKey)
 	}
-	if targetNamespace == instance.Namespace {
-		return secretName, nil
-	}
-
-	copyName := resources.DefaultPullSecretName(instance.Name)
-	desired := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      copyName,
-			Namespace: targetNamespace,
-			Labels:    resources.CommonLabels(instance),
-		},
-		Type: corev1.SecretTypeDockerConfigJson,
-		Data: map[string][]byte{resources.PullSecretDataKey: data},
-	}
-	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
-		desired.Labels = resources.APIEndpointLabels(instance)
-	}
-	// Owner references only work within the same namespace as the owner.
-	// For topologies where targetNamespace == instance.Namespace (crc),
-	// this lets Kubernetes garbage-collect the copy automatically alongside
-	// the instance, the same as the canonical kubeconfig secret. For
-	// cross-namespace targets (hcp's HostedCluster namespace), teardown
-	// cleans it up explicitly instead.
-	if targetNamespace == instance.Namespace {
-		if err := controllerutil.SetControllerReference(instance, desired, r.Scheme); err != nil {
-			return "", fmt.Errorf("setting owner reference on default pull secret %s/%s: %w", targetNamespace, copyName, err)
-		}
-	}
-
-	verify := func(existing *corev1.Secret) error { return nil }
-	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
-		verify = func(existing *corev1.Secret) error { return r.verifyHCPResource(ctx, instance, existing) }
-	}
-	if err := r.upsertSecret(ctx, desired, func(existing *corev1.Secret) bool {
-		return !bytes.Equal(existing.Data[resources.PullSecretDataKey], data)
-	}, verify); err != nil {
-		return "", fmt.Errorf("upserting default pull secret %s/%s: %w", targetNamespace, copyName, err)
-	}
-
-	return copyName, nil
+	return secretName, nil
 }
 
 // validateBundleSSHKey fails fast if the instance's template does not

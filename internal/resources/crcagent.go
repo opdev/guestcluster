@@ -41,23 +41,6 @@ const CRCAgentImageEnvVar = "CRC_AGENT_IMAGE"
 // environment (see config/manager/manager.yaml).
 const DefaultCRCAgentImage = "opdev.io/guestcluster-operator-crc-agent:latest"
 
-// CRCAgentServiceAccountEnvVar names the legacy shared account. Existing Jobs
-// keep using it until they finish; new Jobs use CRCAgentAccountName instead.
-const CRCAgentServiceAccountEnvVar = "CRC_AGENT_SERVICE_ACCOUNT"
-
-// DefaultCRCAgentServiceAccount is used when CRCAgentServiceAccountEnvVar is
-// unset, matching config/rbac/crc_agent_service_account.yaml's unprefixed
-// name (for example when running via `make run` outside a Pod).
-const DefaultCRCAgentServiceAccount = "crc-agent"
-
-// CRCAgentServiceAccount returns the legacy shared account name.
-func CRCAgentServiceAccount() string {
-	if sa := os.Getenv(CRCAgentServiceAccountEnvVar); sa != "" {
-		return sa
-	}
-	return DefaultCRCAgentServiceAccount
-}
-
 const CRCAgentClusterRoleEnvVar = "CRC_AGENT_CLUSTER_ROLE"
 const DefaultCRCAgentClusterRole = "crc-agent-instance-role"
 
@@ -166,7 +149,6 @@ func BuildCRCAgentJob(instance *brokerv1alpha1.ClusterInstance, vmIP, vmiUID, ss
 							Env: []corev1.EnvVar{
 								{Name: "INSTANCE_NAME", Value: instance.Name},
 								{Name: "INSTANCE_UID", Value: string(instance.UID)},
-								{Name: "CRC_VM_NAME", Value: CRCVMName(instance)},
 								{Name: "INSTANCE_NAMESPACE", Value: instance.Namespace},
 								{Name: "CRC_SSH_HOST", Value: vmIP},
 								{Name: "CRC_VMI_UID", Value: vmiUID},

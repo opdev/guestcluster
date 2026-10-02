@@ -70,10 +70,6 @@ type ClusterInstanceSpec struct {
 
 // CRCBackingStatus tracks the KubeVirt VM backing a topology=crc instance.
 type CRCBackingStatus struct {
-	// VMName is the name of the KubeVirt VirtualMachine running the CRC/SNO bundle.
-	VMName string `json:"vmName,omitempty"`
-	// DataVolumeName is the CDI DataVolume providing the VM's root disk.
-	DataVolumeName string `json:"dataVolumeName,omitempty"`
 	// VMUID and DataVolumeUID retain parent identity while dependent compute and
 	// storage are deleted. Names alone cannot identify those dependents safely.
 	VMUID         string `json:"vmUID,omitempty"`
@@ -105,24 +101,10 @@ type CRCBootKeyStatus struct {
 	KeySHA256        string `json:"keySHA256"`
 }
 
-// HyperShiftBackingStatus tracks the HostedCluster/NodePool backing a topology=hcp
-// instance.
-type HyperShiftBackingStatus struct {
-	// HostedClusterName is the name of the hypershift.openshift.io/v1beta1 HostedCluster.
-	HostedClusterName string `json:"hostedClusterName,omitempty"`
-	// HostedClusterNamespace records the namespace holding the HostedCluster.
-	// New instances use their source namespace. Legacy instances can use "clusters".
-	HostedClusterNamespace string `json:"hostedClusterNamespace,omitempty"`
-	// NodePoolNames lists the NodePool(s) backing this instance's workers.
-	NodePoolNames []string `json:"nodePoolNames,omitempty"`
-}
-
 // ClusterInstanceStatus defines the observed state of ClusterInstance.
 type ClusterInstanceStatus struct {
 	// Provisioning records the durable authorization to start backing-resource
 	// creation. Removing the namespace opt-in label does not revoke this decision.
-	// An absent value does not prove that a legacy instance has not started;
-	// the controller verifies existing backing resources before migration.
 	// +optional
 	Provisioning *ProvisioningAuthorization `json:"provisioning,omitempty"`
 
@@ -160,10 +142,6 @@ type ClusterInstanceStatus struct {
 	// +optional
 	CRC *CRCBackingStatus `json:"crc,omitempty"`
 
-	// HyperShift holds backing-object references for topology=hcp instances.
-	// +optional
-	HyperShift *HyperShiftBackingStatus `json:"hyperShift,omitempty"`
-
 	// ObservedGeneration is the generation last reconciled.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -181,9 +159,6 @@ type ClusterInstanceStatus struct {
 type ProvisioningAuthorization struct {
 	// StartedAt is when the controller authorized provisioning.
 	StartedAt metav1.Time `json:"startedAt"`
-	// Legacy means existing backing-resource identity was verified during upgrade.
-	// It permits verified adoption of resources from older controller versions.
-	Legacy bool `json:"legacy,omitempty"`
 }
 
 // +kubebuilder:object:root=true

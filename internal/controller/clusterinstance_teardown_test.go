@@ -273,20 +273,30 @@ func TestReconcileDeleteHCPWaitsForWorkerVMIsAndLauncherPods(t *testing.T) {
 		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyHCP},
 	}
 	const resourceFinalizer = "test.example.io/cleanup"
-	setLegacyHCPTestPlacement(instance)
 	hc := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{
-		Name:       resources.HostedClusterName(instance.Name),
-		Namespace:  resources.DefaultHostedClusterNamespace,
-		Finalizers: []string{resourceFinalizer},
-		Labels:     resources.CommonLabels(instance),
+		Name:            resources.HostedClusterName(instance.Name),
+		Namespace:       instance.Namespace,
+		UID:             "hosted-cluster-uid",
+		Finalizers:      []string{resourceFinalizer},
+		Labels:          resources.APIEndpointLabels(instance),
+		OwnerReferences: resources.InstanceOwnerReferences(instance),
 	}}
 	np := &hyperv1beta1.NodePool{ObjectMeta: metav1.ObjectMeta{
 		Name:       resources.NodePoolName(instance.Name),
-		Namespace:  resources.DefaultHostedClusterNamespace,
+		Namespace:  instance.Namespace,
 		Finalizers: []string{resourceFinalizer},
-		Labels:     resources.CommonLabels(instance),
-	}}
-	hcpNamespace := resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name)
+		Labels:     resources.APIEndpointLabels(instance),
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(hc, hyperv1beta1.GroupVersion.WithKind("HostedCluster")),
+			func() metav1.OwnerReference {
+				owner := resources.InstanceOwnerReferences(instance)[0]
+				controller, block := false, false
+				owner.Controller, owner.BlockOwnerDeletion = &controller, &block
+				return owner
+			}(),
+		},
+	}, Spec: hyperv1beta1.NodePoolSpec{ClusterName: hc.Name}}
+	hcpNamespace := resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
 	workerVMIName := "hcp-worker-vmi"
 	workerVMI := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{
 		Name:      workerVMIName,
@@ -381,8 +391,7 @@ func TestReconcileDeleteWaitsForLauncherPodMissingFromCache(t *testing.T) {
 			objects := []client.Object{instance, pod}
 			var dv *cdiv1beta1.DataVolume
 			if topology == brokerv1alpha1.TopologyHCP {
-				setLegacyHCPTestPlacement(instance)
-				pod.Namespace = resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name)
+				pod.Namespace = resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
 				pod.Labels = map[string]string{hyperv1beta1.NodePoolNameLabel: resources.NodePoolName(instance.Name)}
 			} else {
 				dv = &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{
@@ -446,21 +455,20 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 			}
 			instance := deletingCRCInstance("hcp-storage-old", time.Now())
 			instance.Spec.Type = brokerv1alpha1.TopologyHCP
-			setLegacyHCPTestPlacement(instance)
 			instance.Spec.PoolRef = corev1.LocalObjectReference{Name: pool.Name}
 			instance.Labels = resources.PoolLabels(pool.Name)
 			// The parents, VMIs, and launcher pods are already gone. This claim
 			// has no NodePool label and is not yet visible in the cache.
 			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 				Name:      "worker-root-disk",
-				Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name),
+				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name),
 			}}
 			if deleting {
 				pvc.DeletionTimestamp = timePointer(time.Now())
 				pvc.Finalizers = []string{"test.example.io/storage-cleanup"}
 			}
 			otherPVC := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, "other-cluster"),
+				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, "other-cluster"),
 			}}
 			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC, enabledTestNamespace(pool.Namespace))
 			c.hidePVCsFromList = true
@@ -529,7 +537,6 @@ func TestReconcileDeleteHCPKeepsFinalizerOnPVCListError(t *testing.T) {
 	ctx := context.Background()
 	instance := deletingCRCInstance("hcp-storage-read-error", time.Now())
 	instance.Spec.Type = brokerv1alpha1.TopologyHCP
-	setLegacyHCPTestPlacement(instance)
 	c := newTeardownFakeClient(t, instance)
 	c.pvcListError = apierrors.NewServiceUnavailable("storage API unavailable")
 	r := &ClusterInstanceReconciler{Client: c, APIReader: c, Scheme: c.Scheme()}
@@ -548,14 +555,6 @@ func deletingCRCInstance(name string, deletionTime time.Time) *brokerv1alpha1.Cl
 			DeletionTimestamp: timePointer(deletionTime),
 		},
 		Spec: brokerv1alpha1.ClusterInstanceSpec{Type: brokerv1alpha1.TopologyCRC},
-	}
-}
-
-func setLegacyHCPTestPlacement(instance *brokerv1alpha1.ClusterInstance) {
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
-		HostedClusterName:      instance.Name,
-		NodePoolNames:          []string{resources.NodePoolName(instance.Name)},
 	}
 }
 

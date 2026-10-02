@@ -80,9 +80,6 @@ spec:
           # edit them by hand.
           - name: BUNDLE_PREP_SERVICE_ACCOUNT
             value: bundle-prep
-          # Legacy shared account: keep it for Jobs created before this release.
-          - name: CRC_AGENT_SERVICE_ACCOUNT
-            value: crc-agent
           # Kustomize replaces this with the installed ClusterRole name.
           - name: CRC_AGENT_CLUSTER_ROLE
             value: crc-agent-instance-role

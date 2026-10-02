@@ -85,7 +85,7 @@ func TestReconcileReadyCRC_VMIReplacementRemovesPreviousHandoff(t *testing.T) {
 			Phase:               brokerv1alpha1.PhaseReady,
 			APIEndpoint:         oldAPIEndpoint,
 			KubeconfigSecretRef: corev1.LocalObjectReference{Name: resources.KubeconfigSecretName(recoveryInstanceName)},
-			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMName: recoveryInstanceName, DataVolumeName: recoveryInstanceName + "-rootdisk", VMIUID: "old-vmi"},
+			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: "old-vmi"},
 		},
 	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, "old-vmi"), Namespace: instance.Namespace}}
@@ -357,7 +357,7 @@ func TestReconcileProvisioningCRCVMI_VMIReplacementRemovesPreviousHandoff(t *tes
 			Phase:               brokerv1alpha1.PhaseProvisioning,
 			APIEndpoint:         oldAPIEndpoint,
 			KubeconfigSecretRef: corev1.LocalObjectReference{Name: resources.KubeconfigSecretName(recoveryInstanceName)},
-			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMName: recoveryInstanceName, DataVolumeName: recoveryInstanceName + "-rootdisk", VMIUID: "old-vmi"},
+			CRC:                 &brokerv1alpha1.CRCBackingStatus{VMIUID: "old-vmi"},
 		},
 	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, "old-vmi"), Namespace: instance.Namespace}}
@@ -403,7 +403,7 @@ func TestReconcileProvisioningCRCVMI_UnrecordedVMIUIDDoesNotInvalidateHandoff(t 
 		ObjectMeta: metav1.ObjectMeta{Name: recoveryInstanceName, Namespace: testNamespace},
 		Status: brokerv1alpha1.ClusterInstanceStatus{
 			Phase: brokerv1alpha1.PhaseProvisioning,
-			CRC:   &brokerv1alpha1.CRCBackingStatus{VMName: recoveryInstanceName, DataVolumeName: recoveryInstanceName + "-rootdisk"},
+			CRC:   &brokerv1alpha1.CRCBackingStatus{},
 		},
 	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, "vmi"), Namespace: instance.Namespace}}
@@ -479,7 +479,8 @@ func TestReconcileCRC_FailsWhenAgentJobIsTerminal(t *testing.T) {
 				Status:     kubevirtv1.VirtualMachineStatus{Ready: true},
 			}
 			job := &batchv1.Job{
-				ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, recoveryVMIUID), Namespace: instance.Namespace, OwnerReferences: []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: func() *bool { b := true; return &b }()}}},
+				ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(instance.Name, recoveryVMIUID), Namespace: instance.Namespace, OwnerReferences: resources.InstanceOwnerReferences(instance)},
+				Spec:       batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{ServiceAccountName: resources.CRCAgentAccountName(instance.Name)}}},
 				Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
 					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: reason,
 				}}},

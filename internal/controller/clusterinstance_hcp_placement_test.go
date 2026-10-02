@@ -22,7 +22,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 	"github.com/opdev/guestcluster/internal/resources"
@@ -152,9 +151,6 @@ func provisionHCPForPlacementTest(t *testing.T, r *ClusterInstanceReconciler, in
 		}
 		assignFakeHostedClusterUID(t, r, instance)
 	}
-	if instance.Status.HyperShift.HostedClusterNamespace != instance.Namespace {
-		t.Fatalf("unexpected placement: %+v", instance.Status.HyperShift)
-	}
 	hc := &hyperv1beta1.HostedCluster{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc); err != nil {
 		t.Fatal(err)
@@ -269,124 +265,8 @@ func TestHCPPlacementRejectsInvalidControlPlaneNamespace(t *testing.T) {
 	instance := hcpEndpointTestInstance(strings.Repeat("a", 40), strings.Repeat("n", 40))
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(context.Background(), instance); err == nil {
+	if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
 		t.Fatal("accepted a control-plane namespace longer than 63 characters")
-	}
-}
-
-func TestHCPPlacementRecoversLegacyLocation(t *testing.T) {
-	instance := hcpEndpointTestInstance("legacy-placement", "tenant-one")
-	instance.UID = types.UID("legacy-instance")
-	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{Namespace: resources.DefaultHostedClusterNamespace})
-	c := newHyperShiftFakeClient(t, instance, hc)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(context.Background(), instance); err != nil {
-		t.Fatal(err)
-	}
-	if instance.Status.HyperShift.HostedClusterNamespace != resources.DefaultHostedClusterNamespace {
-		t.Fatal("legacy HostedCluster was relocated")
-	}
-}
-
-func TestReadyHCPRetriesTemporaryPlacementFailures(t *testing.T) {
-	for _, phase := range []brokerv1alpha1.ClusterInstancePhase{brokerv1alpha1.PhaseReady, brokerv1alpha1.PhaseProvisioning} {
-		for _, failure := range []string{"read", "status write"} {
-			t.Run(string(phase)+"/"+failure, func(t *testing.T) {
-				ctx := context.Background()
-				instance := hcpEndpointTestInstance("retry-legacy", "tenant-one")
-				instance.Status.Phase = phase
-				hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{Namespace: resources.DefaultHostedClusterNamespace})
-				base := newHyperShiftFakeClient(t, instance, hc)
-				writer := &failOnceHCPStatusClient{Client: base, fail: failure == "status write"}
-				r := &ClusterInstanceReconciler{Client: writer, Scheme: base.Scheme()}
-				if failure == "read" {
-					r.APIReader = unavailableHCPReader{Reader: base}
-				}
-				reconcile := r.reconcileHyperShift
-				if phase == brokerv1alpha1.PhaseReady {
-					reconcile = r.reconcileReadyHyperShift
-				}
-				if _, err := reconcile(ctx, instance); err == nil {
-					t.Fatal("expected a retryable placement error")
-				}
-				stored := &brokerv1alpha1.ClusterInstance{}
-				if err := base.Get(ctx, client.ObjectKeyFromObject(instance), stored); err != nil {
-					t.Fatal(err)
-				}
-				if stored.Status.Phase != phase || stored.Status.HyperShift != nil {
-					t.Fatalf("temporary failure changed instance status: %+v", stored.Status)
-				}
-				r.APIReader = base
-				if result, err := reconcile(ctx, stored); err != nil || result.RequeueAfter != requeueInterval {
-					t.Fatalf("placement retry = %+v, %v", result, err)
-				}
-				if stored.Status.HyperShift == nil || stored.Status.HyperShift.HostedClusterNamespace != hc.Namespace {
-					t.Fatalf("legacy placement was not recorded on retry: %+v", stored.Status.HyperShift)
-				}
-			})
-		}
-	}
-}
-
-func TestHCPPlacementRecoversLegacySourceInClusters(t *testing.T) {
-	instance := hcpEndpointTestInstance("legacy-source", resources.DefaultHostedClusterNamespace)
-	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{Namespace: instance.Namespace})
-	c := newHyperShiftFakeClient(t, instance, hc)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(context.Background(), instance); err != nil {
-		t.Fatal(err)
-	}
-	if instance.Status.HyperShift.HostedClusterNamespace != instance.Namespace {
-		t.Fatal("legacy HostedCluster in the source namespace was not recovered")
-	}
-}
-
-func TestHCPPlacementPreservesPartialLegacyStatus(t *testing.T) {
-	ctx := context.Background()
-	instance := hcpEndpointTestInstance("partial-legacy", "tenant-one")
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterName: instance.Name, NodePoolNames: []string{"custom-workers"},
-	}
-	instance.Status.APIEndpoint = "https://api.partial-legacy.apps.old.test"
-	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{Namespace: resources.DefaultHostedClusterNamespace})
-	c := newHyperShiftFakeClient(t, instance, hc)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-	if instance.Status.HyperShift.HostedClusterNamespace != resources.DefaultHostedClusterNamespace ||
-		instance.Status.HyperShift.NodePoolNames[0] != "custom-workers" ||
-		instance.Status.APIEndpoint != "https://api.partial-legacy.apps.old.test" {
-		t.Fatalf("partial legacy status changed: %+v", instance.Status)
-	}
-}
-
-func TestHCPPlacementRecoversLegacySecretAfterHostedClusterDeletion(t *testing.T) {
-	ctx := context.Background()
-	instance := hcpEndpointTestInstance("orphaned-cluster", "tenant-one")
-	cert := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Name: resources.KASServingCertName(instance.Name), Namespace: resources.DefaultHostedClusterNamespace,
-		Labels: resources.CommonLabels(instance),
-	}}
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-		Name: resources.HostedControlPlaneNamespace(cert.Namespace, instance.Name),
-	}}
-	c := newHyperShiftFakeClient(t, instance, cert, ns)
-	if err := kubevirtv1.AddToScheme(c.Scheme()); err != nil {
-		t.Fatal(err)
-	}
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-	if instance.Status.HyperShift.HostedClusterNamespace != resources.DefaultHostedClusterNamespace {
-		t.Fatal("lost the legacy location after HostedCluster deletion")
-	}
-	if _, err := r.teardownHyperShiftBacking(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(cert), cert); !apierrors.IsNotFound(err) {
-		t.Fatalf("legacy certificate was not cleaned up: %v", err)
 	}
 }
 
@@ -395,60 +275,8 @@ func TestHCPPlacementRejectsUnclaimedControlPlaneNamespace(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)}}
 	c := newHyperShiftFakeClient(t, instance, ns)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(context.Background(), instance); err == nil {
+	if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
 		t.Fatal("claimed an existing control-plane namespace without a HostedCluster")
-	}
-}
-
-func TestRecordedLegacyHCPAndSameNamedLocalInstance(t *testing.T) {
-	ctx := context.Background()
-	legacy := hcpEndpointTestInstance("shared-upgrade", "old-tenant")
-	local := hcpEndpointTestInstance(legacy.Name, "new-tenant")
-	setLegacyHCPTestPlacement(legacy)
-	hostname := resources.APIServerHostname(legacy.Name, "apps.old.test")
-	legacy.Status.APIEndpoint = "https://" + hostname
-	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(hostname)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Name: resources.KASServingCertName(legacy.Name), Namespace: resources.DefaultHostedClusterNamespace,
-		Labels: resources.CommonLabels(legacy),
-	}, Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM}}
-	hc := resources.BuildHostedCluster(legacy, resources.HostedClusterOptions{
-		Namespace: cert.Namespace, ServingCertName: cert.Name, ServingCertHostname: hostname,
-		NodePortAddress: testManagementNodeIP,
-	})
-	route := resources.BuildHostedClusterAPIRoute(legacy, hostname, resources.HostedControlPlaneNamespace(hc.Namespace, hc.Name))
-	delete(route.Labels, resources.LabelInstanceNamespace)
-	objs := []client.Object{legacy, local, hc, cert, route, hcpEndpointTestPullSecret(legacy), hcpEndpointTestPullSecret(local),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: route.Namespace}},
-		&configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}},
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: testManagementNodeName}, Status: corev1.NodeStatus{
-			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
-			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: testManagementNodeIP}},
-		}},
-	}
-	c := newHyperShiftFakeClient(t, objs...)
-	if err := kubevirtv1.AddToScheme(c.Scheme()); err != nil {
-		t.Fatal(err)
-	}
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	provisionHCPForPlacementTest(t, r, local)
-	if _, err := r.reconcileHyperShift(ctx, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.teardownHyperShiftBacking(ctx, local); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(cert), cert); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(certPEM, cert.Data[corev1.TLSCertKey]) || legacy.Status.APIEndpoint != "https://"+hostname || legacy.Status.HyperShift.HostedClusterNamespace != hc.Namespace {
-		t.Fatal("new instance changed the legacy location or endpoint identity")
-	}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(hc), hc); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -457,33 +285,19 @@ func TestHCPPlacementRejectsNamespaceCollisions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			instance := hcpEndpointTestInstance(name, "tenant")
 			other := hcpEndpointTestInstance("b", "tenant-a")
-			other.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{HostedClusterNamespace: other.Namespace, HostedClusterName: other.Name}
 			c := newHyperShiftFakeClient(t, instance, other)
 			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-			if _, err := r.recordHCPPlacement(context.Background(), instance); err == nil {
+			if err := r.checkHCPPlacement(context.Background(), instance); err == nil {
 				t.Fatal("accepted a colliding HyperShift control-plane namespace")
 			}
 		})
 	}
 }
 
-func TestHCPPlacementRejectsAmbiguousLegacyOwnership(t *testing.T) {
-	first := hcpEndpointTestInstance("ambiguous-legacy", "tenant-one")
-	second := hcpEndpointTestInstance(first.Name, "tenant-two")
-	hc := resources.BuildHostedCluster(first, resources.HostedClusterOptions{Namespace: resources.DefaultHostedClusterNamespace})
-	c := newHyperShiftFakeClient(t, first, second, hc)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	for _, instance := range []*brokerv1alpha1.ClusterInstance{first, second} {
-		if _, err := r.recordHCPPlacement(context.Background(), instance); err == nil {
-			t.Fatal("adopted legacy resources without a unique source identity")
-		}
-	}
-}
-
 func TestHCPWorkerSSHInputRemainsLocalAndUserOwned(t *testing.T) {
 	ctx := context.Background()
 	instance := hcpEndpointTestInstance("local-ssh", "tenant-one")
-	instance.Spec.Template.HCPWorkerSSHKeyRef = &corev1.LocalObjectReference{Name: resources.HCPWorkerSSHKeyName(instance.Name)}
+	instance.Spec.Template.HCPWorkerSSHKeyRef = &corev1.LocalObjectReference{Name: "worker-ssh-key"}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: instance.Spec.Template.HCPWorkerSSHKeyRef.Name, Namespace: instance.Namespace},
 		Data: map[string][]byte{resources.HCPWorkerSSHKeyDataKey: []byte("ssh-ed25519 test-key")}}
 	c := newHyperShiftFakeClient(t, instance, secret)
@@ -491,10 +305,7 @@ func TestHCPWorkerSSHInputRemainsLocalAndUserOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-	if name, err := r.resolveHCPWorkerSSHKey(ctx, instance, instance.Namespace); err != nil || name != secret.Name {
+	if name, err := r.resolveHCPWorkerSSHKey(ctx, instance); err != nil || name != secret.Name {
 		t.Fatalf("local SSH key resolution = %q, %v", name, err)
 	}
 	if _, err := r.teardownHyperShiftBacking(ctx, instance); err != nil {
@@ -513,7 +324,6 @@ func TestHCPRefusesForeignLocalResources(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			instance := hcpEndpointTestInstance("foreign-resource", "tenant-one")
-			instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{HostedClusterNamespace: instance.Namespace, HostedClusterName: instance.Name}
 			var foreign client.Object = &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace}}
 			if strings.Contains(kind, "TLS Secret") {
 				foreign = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resources.KASServingCertName(instance.Name), Namespace: instance.Namespace}}
@@ -540,9 +350,6 @@ func TestHCPRefusesNodePoolWithWrongHostedClusterOwner(t *testing.T) {
 	ctx := context.Background()
 	instance := hcpEndpointTestInstance("nodepool-owner", "tenant-one")
 	instance.UID = "instance-uid"
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterNamespace: instance.Namespace, HostedClusterName: instance.Name,
-	}
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	np := resources.BuildNodePool(instance, instance.Name, instance.Namespace, 1)
@@ -558,55 +365,26 @@ func TestHCPRefusesNodePoolWithWrongHostedClusterOwner(t *testing.T) {
 	}
 }
 
-func TestHCPPublishedKubeconfigOwnership(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		name := "conflicting"
-		if legacy {
-			name = "legacy"
-		}
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			instance := hcpEndpointTestInstance("kubeconfig-owner", "tenant-one")
-			instance.UID = "instance-uid"
-			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-				Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace,
-				Labels: resources.CommonLabels(instance),
-			}}
-			if legacy {
-				instance.Status.Phase = brokerv1alpha1.PhaseReady
-				instance.Status.APIEndpoint = "https://api.old.test"
-				instance.Status.KubeconfigSecretRef.Name = secret.Name
-			}
-			c := newHyperShiftFakeClient(t, instance, secret)
-			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-			_, err := r.markReady(ctx, instance, "4.19.0", "https://api.old.test", []byte("kubeconfig"))
-			if !legacy && err == nil {
-				t.Fatal("overwrote an unclaimed kubeconfig Secret")
-			}
-			if legacy && err != nil {
-				t.Fatal(err)
-			}
-			if err := c.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
-				t.Fatal(err)
-			}
-			if legacy && !metav1.IsControlledBy(secret, instance) {
-				t.Fatal("did not backfill the legacy kubeconfig owner")
-			}
-			if !legacy && len(secret.Data) != 0 {
-				t.Fatal("changed the unclaimed kubeconfig Secret")
-			}
-		})
-	}
-}
-
-func TestHCPUnrecordedCleanupDoesNotIgnoreLegacyNamespace(t *testing.T) {
-	instance := hcpEndpointTestInstance("orphan-placement", "tenant-one")
-	instance.DeletionTimestamp = timePointer(time.Now())
-	instance.Finalizers = []string{instanceFinalizer}
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name)}}
-	c := newHyperShiftFakeClient(t, instance, namespace)
+func TestHCPPublishedKubeconfigRequiresInstanceOwner(t *testing.T) {
+	ctx := context.Background()
+	instance := hcpEndpointTestInstance("kubeconfig-owner", "tenant-one")
+	instance.UID = "instance-uid"
+	instance.Status.Phase = brokerv1alpha1.PhaseReady
+	instance.Status.APIEndpoint = "https://api.test"
+	instance.Status.KubeconfigSecretRef.Name = resources.KubeconfigSecretName(instance.Name)
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: resources.KubeconfigSecretName(instance.Name), Namespace: instance.Namespace,
+		Labels: resources.CommonLabels(instance),
+	}}
+	c := newHyperShiftFakeClient(t, instance, secret)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.teardownHyperShiftBacking(context.Background(), instance); err == nil {
-		t.Fatal("cleanup ignored an unverified legacy control-plane namespace")
+	if _, err := r.markReady(ctx, instance, "4.19.0", instance.Status.APIEndpoint, []byte("kubeconfig")); err == nil {
+		t.Fatal("adopted a kubeconfig Secret without an instance owner")
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+		t.Fatal(err)
+	}
+	if len(secret.Data) != 0 || len(secret.OwnerReferences) != 0 {
+		t.Fatal("changed an unowned kubeconfig Secret")
 	}
 }

@@ -59,8 +59,6 @@ type crcResult struct {
 	agentCondition *metav1.Condition
 	ocpVersion     string
 	kubeconfig     []byte
-	vmName         string
-	dvName         string
 	sshEndpoint    string
 	vmiUID         string
 	// apiEndpoint is the externally-routable URL of the guest API server
@@ -151,14 +149,8 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 // safely in place. Drift correction here only re-creates objects that were
 // deleted out-of-band; it does not patch existing ones.
 func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, bundleKeyDataKey, pullSecretName string) (crcResult, error) {
-	if instance.Status.Provisioning != nil && instance.Status.Provisioning.Legacy && instance.Spec.Template.CRCVersion != "" && crcBootKeyBinding(instance) == nil {
-		return r.continueLegacyCRCAgent(ctx, instance, pullSecretName)
-	}
 	log := logf.FromContext(ctx)
-	res := crcResult{
-		vmName: resources.CRCVMName(instance),
-		dvName: resources.CRCDiskName(instance),
-	}
+	res := crcResult{}
 
 	src, err := r.resolveCRCDataVolumeSource(ctx, instance, bundleKeyDataKey)
 	if err != nil {
@@ -185,7 +177,7 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 	if _, err := r.ensureCRCObject(ctx, instance, dv); err != nil {
 		return res, err
 	}
-	vm := resources.BuildCRCVirtualMachine(instance, res.dvName)
+	vm := resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
 	obj, err := r.ensureCRCObject(ctx, instance, vm)
 	if err != nil {
 		return res, err
@@ -232,10 +224,6 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 }
 
 func (r *ClusterInstanceReconciler) ensureCRCAgentBacking(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string) (crcResult, error) {
-	return r.ensureCRCAgentBackingForJob(ctx, instance, res, sshSecretName, sshDataKey, pullSecretName, nil)
-}
-
-func (r *ClusterInstanceReconciler) ensureCRCAgentBackingForJob(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, res crcResult, sshSecretName, sshDataKey, pullSecretName string, legacyJob *batchv1.Job) (crcResult, error) {
 	log := logf.FromContext(ctx)
 	vmIP := res.sshEndpoint
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
@@ -265,18 +253,13 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBackingForJob(ctx context.Cont
 	if err := controllerutil.SetControllerReference(instance, job, r.Scheme); err != nil {
 		return res, fmt.Errorf("setting owner reference on crc-agent Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
-	existingJob := legacyJob
-	if existingJob == nil {
-		obj, err := r.ensureCRCObject(ctx, instance, job)
-		if err != nil {
-			return res, err
-		}
-		existingJob = obj.(*batchv1.Job)
+	obj, err := r.ensureCRCObject(ctx, instance, job)
+	if err != nil {
+		return res, err
 	}
-	// A Job's Pod template is immutable. Leave Jobs from the shared-account
-	// deployment on that account; the legacy Role and binding remain installed.
-	if existingJob.Name != "" && !metav1.IsControlledBy(existingJob, instance) {
-		return res, fmt.Errorf("crc-agent Job %s/%s is not controlled by this ClusterInstance", job.Namespace, job.Name)
+	existingJob := obj.(*batchv1.Job)
+	if existingJob.Spec.Template.Spec.ServiceAccountName != resources.CRCAgentAccountName(instance.Name) {
+		return res, apiEndpointConflict("crc-agent Job %s/%s does not use its instance ServiceAccount", job.Namespace, job.Name)
 	}
 
 	// Once the crc-agent Job completes successfully, it publishes the raw
@@ -294,9 +277,6 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBackingForJob(ctx context.Cont
 		return res, err
 	}
 	// A freshly created Job is not necessarily visible through the cache yet.
-	if existingJob.Name == "" {
-		existingJob = job
-	}
 	res.agentCondition, err = r.inspectCRCAgent(ctx, instance, existingJob, len(kubeconfig) > 0)
 	if err != nil {
 		return res, err
@@ -369,11 +349,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling CRC agent permissions: %w", err)
 	}
-	// A verified running legacy disk can continue health checks without a new
-	// disk/key binding. Recovery still requires a verified binding; never infer
-	// the boot key from a newly prepared shared bundle.
-	legacyWithoutKey := instance.Status.Provisioning != nil && instance.Status.Provisioning.Legacy && crcBootKeyBinding(instance) == nil
-	if instance.Spec.Template.CRCVersion != "" && !legacyWithoutKey {
+	if instance.Spec.Template.CRCVersion != "" {
 		binding := crcBootKeyBinding(instance)
 		if binding == nil {
 			return r.markCRCBootKeyUnavailable(ctx, instance, fmt.Errorf("CRC boot disk/key binding is missing; automatic recovery is unsafe"))
@@ -569,7 +545,7 @@ func (r *ClusterInstanceReconciler) invalidateCRCReadiness(ctx context.Context, 
 	}
 
 	if instance.Status.CRC == nil {
-		instance.Status.CRC = &brokerv1alpha1.CRCBackingStatus{VMName: resources.VMName(instance.Name), DataVolumeName: resources.DataVolumeName(instance.Name)}
+		instance.Status.CRC = &brokerv1alpha1.CRCBackingStatus{}
 	}
 	if vmiUID != "" {
 		instance.Status.CRC.VMIUID = vmiUID
@@ -683,17 +659,23 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 		if _, err := r.ensureCRCObject(ctx, instance, existingRoute.DeepCopy()); err != nil {
 			return "", err
 		}
-		// Keep existing hosts, including hosts from the old naming rule.
+		if instance.Status.APIEndpoint == "" {
+			return "", apiEndpointConflict("existing CRC API Route has no recorded endpoint")
+		}
 		if existingRoute.Spec.Host == "" {
 			return "", apiEndpointConflict("CRC API Route %s/%s has an empty host", routeKey.Namespace, routeKey.Name)
+		}
+		hostname, err := apiEndpointHostname(instance.Status.APIEndpoint)
+		if err != nil {
+			return "", err
+		}
+		if existingRoute.Spec.Host != hostname {
+			return "", apiEndpointConflict("CRC Route hostname %q differs from recorded endpoint %q", existingRoute.Spec.Host, hostname)
 		}
 		if err := r.ensureAPIHostnameAvailable(ctx, existingRoute.Spec.Host, routeKey); err != nil {
 			return "", err
 		}
-		if err := r.recordCRCAPIEndpoint(ctx, instance, existingRoute.Spec.Host); err != nil {
-			return "", err
-		}
-		return existingRoute.Spec.Host, nil
+		return hostname, nil
 	} else if !apierrors.IsNotFound(err) {
 		return "", fmt.Errorf("getting CRC API Route %s/%s: %w", routeKey.Namespace, routeKey.Name, err)
 	}
@@ -720,27 +702,9 @@ func (r *ClusterInstanceReconciler) ensureCRCAPIRoute(ctx context.Context, insta
 	return route.Spec.Host, nil
 }
 
-// crcAPIHostnameForNewRoute preserves the identity hostname when a Route was
-// deleted. Only instances without an identity use the current naming rule and
-// ingress domain. This keeps the certificate and kubeconfig valid on recovery.
+// crcAPIHostnameForNewRoute uses the recorded endpoint when it exists. A new
+// instance uses the current naming rule and management ingress domain.
 func (r *ClusterInstanceReconciler) crcAPIHostnameForNewRoute(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (string, error) {
-	key := types.NamespacedName{Name: resources.CRCIdentitySecretName(instance.Name), Namespace: instance.Namespace}
-	identity := &corev1.Secret{}
-	if err := r.Get(ctx, key, identity); err == nil {
-		if !metav1.IsControlledBy(identity, instance) {
-			return "", fmt.Errorf("CRC identity secret %s/%s is not controlled by this ClusterInstance", key.Namespace, key.Name)
-		}
-		hostname, err := resources.CRCIdentityHostname(identity.Data)
-		if err != nil {
-			return "", fmt.Errorf("validating CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
-		}
-		if instance.Status.APIEndpoint != "" && instance.Status.APIEndpoint != "https://"+hostname {
-			return "", apiEndpointConflict("CRC identity differs from recorded endpoint")
-		}
-		return hostname, nil
-	} else if !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("getting CRC identity secret %s/%s for Route recovery: %w", key.Namespace, key.Name, err)
-	}
 	if instance.Status.APIEndpoint != "" {
 		return apiEndpointHostname(instance.Status.APIEndpoint)
 	}
@@ -812,7 +776,7 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 	jobCount := 0
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
-		if !metav1.IsControlledBy(job, instance) && (job.Labels[resources.LabelInstance] != instance.Name || job.Labels[resources.LabelManagedBy] != resources.ManagerName) {
+		if !metav1.IsControlledBy(job, instance) {
 			continue
 		}
 		jobCount++
@@ -858,18 +822,13 @@ func (r *ClusterInstanceReconciler) teardownCRCBacking(ctx context.Context, inst
 		return false, fmt.Errorf("listing CRC handoff secrets: %w", err)
 	}
 	for i := range rawSecrets.Items {
+		if !metav1.IsControlledBy(&rawSecrets.Items[i], instance) {
+			continue
+		}
 		if err := deleteObject(&rawSecrets.Items[i], "raw kubeconfig secret"); err != nil {
 			return false, err
 		}
 	}
-	// Remove the legacy result name from older controller versions.
-	for _, name := range []string{resources.RawKubeconfigSecretName(instance.Name)} {
-		raw := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: instance.Namespace}}
-		if err := deleteObject(raw, "legacy raw kubeconfig secret"); err != nil {
-			return false, err
-		}
-	}
-
 	route := &routev1.Route{ObjectMeta: metav1.ObjectMeta{
 		Name:      resources.CRCAPIRouteName(instance.Name),
 		Namespace: instance.Namespace,

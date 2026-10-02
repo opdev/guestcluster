@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -118,9 +117,6 @@ func TestReconcileHyperShiftUsesLocalPullSecret(t *testing.T) {
 	}
 	c := newHyperShiftFakeClient(t, instance, pullSecret, ingress, node)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
 
 	if _, err := r.reconcileHyperShift(ctx, instance); err != nil {
 		t.Fatalf("reconcileHyperShift: %v", err)
@@ -136,21 +132,21 @@ func TestReconcileHyperShiftUsesLocalPullSecret(t *testing.T) {
 		t.Fatalf("second reconcileHyperShift: %v", err)
 	}
 
-	copyName := instance.Spec.Template.PullSecretRef.Name
-	copy := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Name: copyName, Namespace: instance.Namespace}, copy); err != nil {
-		t.Fatalf("getting copied pull secret: %v", err)
+	pullSecretName := instance.Spec.Template.PullSecretRef.Name
+	input := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Name: pullSecretName, Namespace: instance.Namespace}, input); err != nil {
+		t.Fatalf("getting pull-secret input: %v", err)
 	}
-	if got := string(copy.Data[resources.PullSecretDataKey]); got != string(pullSecretData) {
-		t.Errorf("copied pull secret data = %q, want %q", got, pullSecretData)
+	if got := string(input.Data[resources.PullSecretDataKey]); got != string(pullSecretData) {
+		t.Errorf("pull-secret input data = %q, want %q", got, pullSecretData)
 	}
 
 	hostedCluster := &hyperv1beta1.HostedCluster{}
 	if err := c.Get(ctx, hostedClusterKey, hostedCluster); err != nil {
 		t.Fatalf("getting HostedCluster: %v", err)
 	}
-	if got := hostedCluster.Spec.PullSecret.Name; got != copyName {
-		t.Errorf("HostedCluster.Spec.PullSecret.Name = %q, want %q", got, copyName)
+	if got := hostedCluster.Spec.PullSecret.Name; got != pullSecretName {
+		t.Errorf("HostedCluster.Spec.PullSecret.Name = %q, want %q", got, pullSecretName)
 	}
 }
 
@@ -278,9 +274,6 @@ func TestHCPAPIEndpointIsRecordedAndSharedAcrossResources(t *testing.T) {
 func createHCPWithSelectedEndpoint(t *testing.T, c client.Client, r *ClusterInstanceReconciler, instance *brokerv1alpha1.ClusterInstance, ingress *configv1.Ingress) (*hyperv1beta1.HostedCluster, string, client.ObjectKey) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := r.reconcileHyperShift(ctx, instance); err != nil {
 		t.Fatalf("first reconcileHyperShift: %v", err)
 	}
@@ -335,130 +328,19 @@ func createHCPWithSelectedEndpoint(t *testing.T, c client.Client, r *ClusterInst
 	return hc, hostname, routeKey
 }
 
-func TestHCPAPIEndpointRecoversFromLegacyResourcesWithoutStatus(t *testing.T) {
-	ctx := context.Background()
-	instance := hcpEndpointTestInstance("hcp-legacy", "tenant-one")
-	const oldDomain = "apps.legacy.test"
-	const currentDomain = "apps.current.test"
-	legacyHostname := resources.APIServerHostname(instance.Name, oldDomain)
-	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(legacyHostname)
-	if err != nil {
-		t.Fatalf("generating legacy serving certificate: %v", err)
-	}
-	certSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      resources.KASServingCertName(instance.Name),
-			Namespace: resources.DefaultHostedClusterNamespace,
-			Labels:    resources.CommonLabels(instance),
-		},
-		Type: corev1.SecretTypeTLS,
-		Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
-	}
-	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
-		Namespace: resources.DefaultHostedClusterNamespace, PullSecretName: statusCRCPullSecret,
-		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: legacyHostname,
-	})
-	ingress := &configv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: statusIngressName},
-		Spec:       configv1.IngressSpec{Domain: currentDomain},
-	}
-	c := newHyperShiftFakeClient(t, instance, certSecret, hc, ingress)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-
-	if _, err := r.ensureHyperShiftBacking(ctx, instance, statusCRCPullSecret); err != nil {
-		t.Fatalf("recovering endpoint: %v", err)
-	}
-	if got, want := instance.Status.APIEndpoint, "https://"+legacyHostname; got != want {
-		t.Fatalf("recovered APIEndpoint = %q, want %q", got, want)
-	}
-	storedCert := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(certSecret), storedCert); err != nil {
-		t.Fatalf("getting legacy serving certificate: %v", err)
-	}
-	if !bytes.Equal(storedCert.Data[corev1.TLSCertKey], certPEM) {
-		t.Fatal("endpoint recovery replaced the existing KAS serving certificate")
-	}
-	if namedCertHostname(hc) != legacyHostname {
-		t.Fatalf("legacy HostedCluster hostname = %q, want %q", namedCertHostname(hc), legacyHostname)
-	}
-}
-
-func TestReadyHCPRecoversEndpointBeforeRestoringMissingRoute(t *testing.T) {
-	ctx := context.Background()
-	instance := hcpEndpointTestInstance("hcp-ready-recovery", "tenant-one")
-	instance.Finalizers = []string{instanceFinalizer}
-	instance.Status.Phase = brokerv1alpha1.PhaseReady
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterName: resources.HostedClusterName(instance.Name), HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
-		NodePoolNames: []string{resources.NodePoolName(instance.Name)},
-	}
-	legacyHostname := resources.APIServerHostname(instance.Name, "apps.legacy.test")
-	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(legacyHostname)
-	if err != nil {
-		t.Fatalf("generating legacy serving certificate: %v", err)
-	}
-	certSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: resources.KASServingCertName(instance.Name), Namespace: resources.DefaultHostedClusterNamespace,
-			Labels: resources.CommonLabels(instance),
-		},
-		Type: corev1.SecretTypeTLS,
-		Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
-	}
-	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
-		Namespace: resources.DefaultHostedClusterNamespace, PullSecretName: statusCRCPullSecret,
-		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: legacyHostname,
-	})
-	c := newHyperShiftFakeClient(t, instance, certSecret, hc)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-
-	result, err := r.reconcileReadyHyperShift(ctx, instance)
-	if err != nil {
-		t.Fatalf("recovering Ready HCP endpoint: %v", err)
-	}
-	if result.RequeueAfter != requeueInterval {
-		t.Fatalf("RequeueAfter after persisting endpoint = %s, want %s", result.RequeueAfter, requeueInterval)
-	}
-	if got, want := instance.Status.APIEndpoint, "https://"+legacyHostname; got != want {
-		t.Fatalf("recovered APIEndpoint = %q, want %q", got, want)
-	}
-	routeKey := client.ObjectKey{
-		Name:      resources.HostedClusterAPIRouteName(instance.Name),
-		Namespace: resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name),
-	}
-	if err := c.Get(ctx, routeKey, &routev1.Route{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("Route was created before endpoint status was saved; get error = %v", err)
-	}
-
-	if _, err := r.reconcileReadyHyperShift(ctx, instance); err != nil {
-		t.Fatalf("restoring missing API Route: %v", err)
-	}
-	restoredRoute := &routev1.Route{}
-	if err := c.Get(ctx, routeKey, restoredRoute); err != nil {
-		t.Fatalf("getting restored API Route: %v", err)
-	}
-	if restoredRoute.Spec.Host != legacyHostname {
-		t.Fatalf("restored Route host = %q, want preserved legacy hostname %q", restoredRoute.Spec.Host, legacyHostname)
-	}
-}
-
 func TestReadyHCPChecksGuestAPIWithoutAPIReader(t *testing.T) {
 	ctx := context.Background()
 	instance := hcpEndpointTestInstance("hcp-ready-api-check", "tenant-one")
 	instance.UID = types.UID("hcp-ready-api-check-uid")
 	instance.Finalizers = []string{instanceFinalizer}
 	instance.Status.Phase = brokerv1alpha1.PhaseReady
-	instance.Status.APIEndpoint = "https://" + resources.APIServerHostname(instance.Name, statusIngressDomain)
-	instance.Status.KubeconfigSecretRef.Name = resources.KubeconfigSecretName(instance.Name)
-	hcpNamespace := resources.DefaultHostedClusterNamespace
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterName: resources.HostedClusterName(instance.Name), HostedClusterNamespace: hcpNamespace,
-		NodePoolNames: []string{resources.NodePoolName(instance.Name)},
-	}
-	hostname, err := apiEndpointHostname(instance.Status.APIEndpoint)
+	hostname, err := resources.APIHostname(instance.Name, instance.Namespace, statusIngressDomain)
 	if err != nil {
-		t.Fatalf("parsing API endpoint: %v", err)
+		t.Fatalf("building API hostname: %v", err)
 	}
+	instance.Status.APIEndpoint = "https://" + hostname
+	instance.Status.KubeconfigSecretRef.Name = resources.KubeconfigSecretName(instance.Name)
+	hcpNamespace := instance.Namespace
 	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(hostname)
 	if err != nil {
 		t.Fatalf("generating serving certificate: %v", err)
@@ -471,11 +353,13 @@ func TestReadyHCPChecksGuestAPIWithoutAPIReader(t *testing.T) {
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
 	}
+	certSecret.OwnerReferences = resources.InstanceOwnerReferences(instance)
 	hostedCluster := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
 		Namespace: hcpNamespace, PullSecretName: statusCRCPullSecret,
 		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: hostname,
 	})
 	hostedCluster.Labels = resources.APIEndpointLabels(instance)
+	hostedCluster.OwnerReferences = resources.InstanceOwnerReferences(instance)
 	hcpRoute := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(hcpNamespace, hostedCluster.Name))
 	hcpRoute.Status.Ingress = []routev1.RouteIngress{{
 		Host:       hostname,
@@ -520,46 +404,41 @@ func TestReadyHCPRouteDeletionTriggersRecovery(t *testing.T) {
 	instance.Finalizers = []string{instanceFinalizer}
 	instance.Status.Phase = brokerv1alpha1.PhaseReady
 	instance.Status.Provisioning = testProvisioningAuthorization()
-	instance.Status.APIEndpoint = "https://" + resources.APIServerHostname(instance.Name, "apps.legacy.test")
-	instance.Status.HyperShift = &brokerv1alpha1.HyperShiftBackingStatus{
-		HostedClusterName: resources.HostedClusterName(instance.Name), HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
-		NodePoolNames: []string{resources.NodePoolName(instance.Name)},
-	}
-	hostname, err := apiEndpointHostname(instance.Status.APIEndpoint)
+	hostname, err := resources.APIHostname(instance.Name, instance.Namespace, statusIngressDomain)
 	if err != nil {
-		t.Fatalf("parsing recorded endpoint: %v", err)
+		t.Fatalf("building API hostname: %v", err)
 	}
+	instance.Status.APIEndpoint = "https://" + hostname
 	certPEM, keyPEM, err := resources.GenerateAPIServerServingCert(hostname)
 	if err != nil {
 		t.Fatalf("generating serving certificate: %v", err)
 	}
 	certSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: resources.KASServingCertName(instance.Name), Namespace: resources.DefaultHostedClusterNamespace,
-			Labels: resources.CommonLabels(instance),
+			Name: resources.KASServingCertName(instance.Name), Namespace: instance.Namespace,
+			Labels: resources.APIEndpointLabels(instance),
 		},
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
 	}
+	certSecret.OwnerReferences = resources.InstanceOwnerReferences(instance)
 	hc := resources.BuildHostedCluster(instance, resources.HostedClusterOptions{
-		Namespace: resources.DefaultHostedClusterNamespace, PullSecretName: statusCRCPullSecret,
+		Namespace: instance.Namespace, PullSecretName: statusCRCPullSecret,
 		NodePortAddress: testManagementNodeIP, ServingCertName: certSecret.Name, ServingCertHostname: hostname,
 	})
-	route := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, instance.Name))
+	route := resources.BuildHostedClusterAPIRoute(instance, hostname, resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name))
 	route.Status.Ingress = []routev1.RouteIngress{{
 		Host:       hostname,
 		Conditions: []routev1.RouteIngressCondition{{Type: routev1.RouteAdmitted, Status: corev1.ConditionTrue}},
 	}}
+	hc.OwnerReferences = resources.InstanceOwnerReferences(instance)
 	c := newHyperShiftFakeClient(t, instance, certSecret, hc, route, enabledTestNamespace(instance.Namespace))
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	// Legacy Routes do not carry the source namespace label. They must still
-	// map to the correct instance during upgrade recovery.
-	legacyRouteEvent := route.DeepCopy()
-	delete(legacyRouteEvent.Labels, resources.LabelInstanceNamespace)
-	legacyRequests := r.instanceForRoute(ctx, legacyRouteEvent)
-	if len(legacyRequests) != 1 || legacyRequests[0].NamespacedName != client.ObjectKeyFromObject(instance) {
-		t.Fatalf("legacy Route requests = %v, want instance %s/%s", legacyRequests, instance.Namespace, instance.Name)
+	oldRouteEvent := route.DeepCopy()
+	delete(oldRouteEvent.Labels, resources.LabelInstanceNamespace)
+	if requests := r.instanceForRoute(ctx, oldRouteEvent); len(requests) != 0 {
+		t.Fatalf("Route without a source-namespace label mapped to an instance: %v", requests)
 	}
 
 	if err := c.Delete(ctx, route); err != nil {
@@ -614,10 +493,6 @@ func TestHCPAPIEndpointReportsExistingRouteHostnameConflict(t *testing.T) {
 	}
 	c := newHyperShiftFakeClient(t, instance, hcpEndpointTestPullSecret(instance), ingress, conflictingRoute)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-
 	_, err = r.reconcileHyperShift(ctx, instance)
 	var conflict apiEndpointConflictError
 	if !errors.As(err, &conflict) {
@@ -648,14 +523,14 @@ func TestSameNamedHCPInstancesInDifferentNamespacesGetDifferentEndpoints(t *test
 	}
 	c := newHyperShiftFakeClient(t, first, second, ingress)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	firstHostname, persist, err := r.resolveHCPAPIHostname(ctx, first, &hyperv1beta1.HostedCluster{}, false, resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, first.Name))
+	firstHostname, persist, err := r.resolveHCPAPIHostname(ctx, first, false, resources.HostedControlPlaneNamespace(first.Namespace, first.Name))
 	if err != nil {
 		t.Fatalf("resolving first HCP endpoint: %v", err)
 	}
 	if !persist {
 		t.Fatal("first HCP endpoint was not marked for status persistence")
 	}
-	secondHostname, persist, err := r.resolveHCPAPIHostname(ctx, second, &hyperv1beta1.HostedCluster{}, false, resources.HostedControlPlaneNamespace(resources.DefaultHostedClusterNamespace, second.Name))
+	secondHostname, persist, err := r.resolveHCPAPIHostname(ctx, second, false, resources.HostedControlPlaneNamespace(second.Namespace, second.Name))
 	if err != nil {
 		t.Fatalf("resolving second HCP endpoint: %v", err)
 	}

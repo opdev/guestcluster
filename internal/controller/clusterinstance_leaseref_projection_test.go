@@ -46,7 +46,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
-	"github.com/opdev/guestcluster/internal/resources"
 )
 
 func newLeaseRefProjectionFakeClient(t *testing.T, objs ...client.Object) client.Client {
@@ -94,10 +93,6 @@ func newProjectionTestInstance(name string, leaseRef *corev1.LocalObjectReferenc
 			Provisioning: testProvisioningAuthorization(),
 			Phase:        brokerv1alpha1.PhaseReady,
 			LeaseRef:     leaseRef,
-			HyperShift: &brokerv1alpha1.HyperShiftBackingStatus{
-				HostedClusterNamespace: resources.DefaultHostedClusterNamespace,
-				HostedClusterName:      name,
-			},
 		},
 	}
 }
