@@ -167,6 +167,7 @@ func main() {
 
 	cfg := configFromEnv()
 	flag.StringVar(&cfg.InstanceName, "instance-name", cfg.InstanceName, "ClusterInstance name this agent serves")
+	flag.StringVar(&cfg.InstanceUID, "instance-uid", cfg.InstanceUID, "UID of the owning ClusterInstance")
 	flag.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace of the ClusterInstance/Secret")
 	flag.StringVar(&cfg.SSHHost, "ssh-host", cfg.SSHHost, "SSH-reachable host/IP of the CRC VM")
 	flag.StringVar(&cfg.ExpectedVMIUID, "vmi-uid", cfg.ExpectedVMIUID, "UID of the CRC VMI")
