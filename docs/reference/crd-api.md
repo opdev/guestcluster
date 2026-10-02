@@ -33,8 +33,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `vmName` _string_ | VMName is the name of the KubeVirt VirtualMachine running the CRC/SNO bundle. |  |  |
-| `dataVolumeName` _string_ | DataVolumeName is the CDI DataVolume providing the VM's root disk. |  |  |
 | `vmUID` _string_ | VMUID and DataVolumeUID retain parent identity while dependent compute and<br />storage are deleted. Names alone cannot identify those dependents safely. |  |  |
 | `dataVolumeUID` _string_ |  |  |  |
 | `sshEndpoint` _string_ | SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for<br />post-boot fixups and kubeconfig extraction. |  |  |
@@ -296,7 +294,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `provisioning` _[ProvisioningAuthorization](#provisioningauthorization)_ | Provisioning records the durable authorization to start backing-resource<br />creation. Removing the namespace opt-in label does not revoke this decision.<br />An absent value does not prove that a legacy instance has not started;<br />the controller verifies existing backing resources before migration. |  | Optional: \{\} <br /> |
+| `provisioning` _[ProvisioningAuthorization](#provisioningauthorization)_ | Provisioning records the durable authorization to start backing-resource<br />creation. Removing the namespace opt-in label does not revoke this decision. |  | Optional: \{\} <br /> |
 | `phase` _[ClusterInstancePhase](#clusterinstancephase)_ | Phase is the current lifecycle phase. |  | Enum: [Provisioning Ready Failed Terminating] <br /> |
 | `ocpVersion` _string_ | OCPVersion is the OpenShift version reported by the running guest<br />cluster (as opposed to Spec.Template.OCPVersion, which is the requested version).<br />A mismatch between requested and observed is surfaced via the VersionMismatch<br />condition and must be treated by CI as a hard fail unless explicitly waived. |  |  |
 | `topology` _[ClusterTopology](#clustertopology)_ | Topology echoes Spec.Type once the instance is Ready, for convenient consumption<br />as an explicit CI output alongside OCPVersion. |  | Enum: [crc hcp] <br /> |
@@ -304,7 +302,6 @@ _Appears in:_
 | `kubeconfigSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | KubeconfigSecretRef names the Secret (in this ClusterInstance's namespace)<br />containing the guest cluster's admin kubeconfig under key "kubeconfig". |  |  |
 | `leaseRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | LeaseRef names the ClusterLease currently claiming this instance, if any.<br />ClusterInstanceReconciler maintains this READ-ONLY, DERIVED projection for<br />observability only (e.g. the "Lease" column on `kubectl get clusterinstance`).<br />This field is never authoritative, and nothing, including the ClusterPool and<br />ClusterInstance controllers themselves, makes scheduling/lifecycle decisions<br />based on it. The single source of truth for the binding is<br />ClusterLease.Status.InstanceRef. ClusterInstanceReconciler keeps this field in<br />sync with that value by watching ClusterLeases, so it may lag by one reconcile. |  |  |
 | `crc` _[CRCBackingStatus](#crcbackingstatus)_ | CRC holds backing-object references for topology=crc instances. |  | Optional: \{\} <br /> |
-| `hyperShift` _[HyperShiftBackingStatus](#hypershiftbackingstatus)_ | HyperShift holds backing-object references for topology=hcp instances. |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the generation last reconciled. |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#condition-v1-meta) array_ | Conditions represent the latest available observations of the instance's state,<br />e.g. type=Ready, type=VersionMismatch. |  | Optional: \{\} <br /> |
 
@@ -526,10 +523,10 @@ _Appears in:_
 | `memory` _string_ | Memory is the amount of memory allocated per VM (CRC VM, or each HyperShift KubeVirt<br />worker VM). E.g. "16Gi" for CRC, "6Gi" for a HyperShift worker. |  | Required: \{\} <br /> |
 | `cores` _integer_ | Cores is the number of vCPUs allocated per VM. |  | Minimum: 1 <br />Required: \{\} <br /> |
 | `rootVolumeSize` _string_ | RootVolumeSize is the size of the root disk (e.g. "35Gi"). |  | Optional: \{\} <br /> |
-| `pullSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | PullSecretRef references a Secret in the ClusterInstance's namespace containing<br />the pull-secret used to pull the release payload / CRC bundle images. This field<br />is optional. When unset, the operator uses the "pull-secret" Secret in the<br />ClusterInstance's namespace. An administrator or pool creator must provide that<br />Secret, for example by copying the management cluster's pull secret into the<br />pool namespace. New HCP HostedClusters reference this local Secret directly.<br />Legacy HCP instances in another namespace use a per-instance copy. Set this<br />field explicitly to use a different credential (e.g. one scoped to a<br />disconnected mirror). |  | Optional: \{\} <br /> |
+| `pullSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | PullSecretRef references a Secret in the ClusterInstance's namespace containing<br />the pull-secret used to pull the release payload / CRC bundle images. This field<br />is optional. When unset, the operator uses the "pull-secret" Secret in the<br />ClusterInstance's namespace. An administrator or pool creator must provide that<br />Secret, for example by copying the management cluster's pull secret into the<br />pool namespace. HCP HostedClusters reference this local Secret directly.<br />Set this field explicitly to use a different credential (e.g. one scoped<br />to a disconnected mirror). |  | Optional: \{\} <br /> |
 | `idmsRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | IDMSRef optionally references an ImageDigestMirrorSet-shaped ConfigMap applied at<br />provision time for disconnected/mirrored registries. Interpreted per-topology:<br />for hcp it seeds HostedCluster.spec.imageContentSources; for crc it is applied<br />as an ImageDigestMirrorSet inside the guest cluster post-boot. |  | Optional: \{\} <br /> |
 | `bundleSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | BundleSSHKeyRef references a Secret (in the ClusterInstance's namespace) containing the<br />CRC bundle's SSH private key (the "id_ecdsa_crc" file shipped inside an official<br />.crcbundle, used to reach the booted VM as user "core"), under a data key named<br />"id_ecdsa", "ssh-privatekey", or "id_rsa". This field is a FALLBACK. When CRCVersion is set,<br />the operator derives the SSH key automatically from the referenced CRCBundle<br />instead, and this field is ignored. When CRCVersion is unset, this field is<br />required for topology=crc: the crc-agent Job uses this key to SSH into the<br />freshly booted CRC VM and run the post-boot fixups natively (start kubelet,<br />approve kubelet CSRs, inject the real pull secret, set credentials, rewrite the<br />kubeconfig server to the externally-routable API Route hostname the<br />ClusterInstance controller provisions). Ignored for topology=hcp. |  | Optional: \{\} <br /> |
-| `hcpWorkerSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace<br />containing an SSH public key under the data key "id_rsa.pub". New HCP<br />HostedClusters reference this Secret directly; the operator does not own<br />or delete it. Legacy HostedClusters in "clusters" use a managed copy.<br />The key is injected for the "core" user on every HCP NodePool worker (via<br />HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config<br />generation). This field is only a debugging convenience (e.g. to inspect a<br />worker that is stuck before ever registering as a Node) and has no effect on<br />cluster function. Most deployments should leave it unset. Ignored for<br />topology=crc (see BundleSSHKeyRef for that path's own, unrelated SSH mechanism). |  | Optional: \{\} <br /> |
+| `hcpWorkerSSHKeyRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core)_ | HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace<br />containing an SSH public key under the data key "id_rsa.pub". HCP<br />HostedClusters reference this Secret directly; the operator does not own<br />or delete it.<br />The key is injected for the "core" user on every HCP NodePool worker (via<br />HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config<br />generation). This field is only a debugging convenience (e.g. to inspect a<br />worker that is stuck before ever registering as a Node) and has no effect on<br />cluster function. Most deployments should leave it unset. Ignored for<br />topology=crc (see BundleSSHKeyRef for that path's own, unrelated SSH mechanism). |  | Optional: \{\} <br /> |
 | `vmNodeSelector` _object (keys:string, values:string)_ | VMNodeSelector constrains which hypervisor node(s) the guest VM(s) are scheduled to. |  | Optional: \{\} <br /> |
 | `storageClassName` _string_ | StorageClassName is the StorageClass used for VM root/data volumes. |  | Optional: \{\} <br /> |
 
@@ -578,25 +575,6 @@ _Appears in:_
 | `HighlyAvailable` | AvailabilityPolicyHighlyAvailable spreads control-plane components<br />across multiple replicas for resilience, at the cost of requiring more<br />schedulable management-cluster capacity.<br /> |
 
 
-#### HyperShiftBackingStatus
-
-
-
-HyperShiftBackingStatus tracks the HostedCluster/NodePool backing a topology=hcp
-instance.
-
-
-
-_Appears in:_
-- [ClusterInstanceStatus](#clusterinstancestatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `hostedClusterName` _string_ | HostedClusterName is the name of the hypershift.openshift.io/v1beta1 HostedCluster. |  |  |
-| `hostedClusterNamespace` _string_ | HostedClusterNamespace records the namespace holding the HostedCluster.<br />New instances use their source namespace. Legacy instances can use "clusters". |  |  |
-| `nodePoolNames` _string array_ | NodePoolNames lists the NodePool(s) backing this instance's workers. |  |  |
-
-
 #### ProvisioningAuthorization
 
 
@@ -611,6 +589,5 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta)_ | StartedAt is when the controller authorized provisioning. |  |  |
-| `legacy` _boolean_ | Legacy means existing backing-resource identity was verified during upgrade.<br />It permits verified adoption of resources from older controller versions. |  |  |
 
 

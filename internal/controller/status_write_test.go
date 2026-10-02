@@ -311,10 +311,6 @@ func TestClusterInstanceHyperShiftProvisioningSkipsUnchangedStatusUpdate(t *test
 	base := newHyperShiftFakeClient(t, instance, pullSecret, ingress, node)
 	c := &countingStatusClient{Client: base}
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.recordHCPPlacement(ctx, instance); err != nil {
-		t.Fatal(err)
-	}
-	c.resetStatusUpdates()
 
 	result, err := r.reconcileHyperShift(ctx, instance)
 	if err != nil {

@@ -133,10 +133,9 @@ type ClusterTemplate struct {
 	// is optional. When unset, the operator uses the "pull-secret" Secret in the
 	// ClusterInstance's namespace. An administrator or pool creator must provide that
 	// Secret, for example by copying the management cluster's pull secret into the
-	// pool namespace. New HCP HostedClusters reference this local Secret directly.
-	// Legacy HCP instances in another namespace use a per-instance copy. Set this
-	// field explicitly to use a different credential (e.g. one scoped to a
-	// disconnected mirror).
+	// pool namespace. HCP HostedClusters reference this local Secret directly.
+	// Set this field explicitly to use a different credential (e.g. one scoped
+	// to a disconnected mirror).
 	// +optional
 	PullSecretRef corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
 
@@ -162,9 +161,9 @@ type ClusterTemplate struct {
 	BundleSSHKeyRef *corev1.LocalObjectReference `json:"bundleSSHKeyRef,omitempty"`
 
 	// HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace
-	// containing an SSH public key under the data key "id_rsa.pub". New HCP
+	// containing an SSH public key under the data key "id_rsa.pub". HCP
 	// HostedClusters reference this Secret directly; the operator does not own
-	// or delete it. Legacy HostedClusters in "clusters" use a managed copy.
+	// or delete it.
 	// The key is injected for the "core" user on every HCP NodePool worker (via
 	// HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
 	// generation). This field is only a debugging convenience (e.g. to inspect a

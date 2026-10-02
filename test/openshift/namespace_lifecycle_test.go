@@ -214,10 +214,9 @@ func runNamespaceLifecyclePair(
 				return instance.Status.Phase == brokerv1alpha1.PhaseReady && instance.Status.CRC.VMIUID != oldUID
 			})
 		} else {
-			hs := instance.Status.HyperShift
 			route := &routev1.Route{ObjectMeta: metav1.ObjectMeta{
 				Name:      resources.HostedClusterAPIRouteName(instance.Name),
-				Namespace: resources.HostedControlPlaneNamespace(hs.HostedClusterNamespace, hs.HostedClusterName),
+				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name),
 			}}
 			must(t, c.Get(ctx, client.ObjectKeyFromObject(route), route))
 			oldUID := route.UID
@@ -509,12 +508,8 @@ func diagnoseKubeconfigTLS(data []byte) string {
 func verifyPlacement(t *testing.T, ctx context.Context, c client.Client, instance *brokerv1alpha1.ClusterInstance) {
 	t.Helper()
 	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
-		hs := instance.Status.HyperShift
-		if hs == nil || hs.HostedClusterNamespace != instance.Namespace {
-			t.Fatal("HCP backing is not namespace-local")
-		}
 		hc := &hyperv1beta1.HostedCluster{}
-		must(t, c.Get(ctx, client.ObjectKey{Namespace: hs.HostedClusterNamespace, Name: hs.HostedClusterName}, hc))
+		must(t, c.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: instance.Name}, hc))
 		if !metav1.IsControlledBy(hc, instance) {
 			t.Fatal("HostedCluster owner is incorrect")
 		}
@@ -547,9 +542,8 @@ func verifyCleanup(t *testing.T, ctx context.Context, c client.Client, instance 
 			return true
 		})
 	}
-	if instance.Status.HyperShift != nil {
-		hs := instance.Status.HyperShift
-		name := resources.HostedControlPlaneNamespace(hs.HostedClusterNamespace, hs.HostedClusterName)
+	if instance.Spec.Type == brokerv1alpha1.TopologyHCP {
+		name := resources.HostedControlPlaneNamespace(instance.Namespace, instance.Name)
 		waitGone(t, ctx, c, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
 	} else {
 		for _, obj := range []client.Object{

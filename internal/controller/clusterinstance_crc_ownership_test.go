@@ -67,35 +67,11 @@ func TestCRCOwnershipRejectsForeignReuseAndDeletion(t *testing.T) {
 	}
 }
 
-func TestCRCVerifiedLegacyAdoptionAndReusedName(t *testing.T) {
-	ctx := context.Background()
-	created := metav1.NewTime(time.Now().Add(-time.Hour))
-	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: policyTestInstanceName, Namespace: pullSecretTestNamespace, UID: crcTestInstanceUID, CreationTimestamp: created}, Spec: brokerv1alpha1.ClusterInstanceSpec{Template: brokerv1alpha1.ClusterTemplate{Memory: testMemory, Cores: 2}}}
-	vm := resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
-	vm.OwnerReferences = nil
-	vm.CreationTimestamp = metav1.NewTime(created.Add(time.Minute))
-	c := newCRCRecoveryFakeClient(t, instance, vm)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	obj, err := r.ensureCRCObject(ctx, instance, resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance)))
-	if err != nil || !metav1.IsControlledBy(obj, instance) {
-		t.Fatalf("legacy owner not added: %v", err)
-	}
-	instance.UID = replacementResourceUID
-	if _, err := r.ensureCRCObject(ctx, instance, resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))); err == nil {
-		t.Fatal("new instance adopted old resources")
-	}
-	vm.OwnerReferences = nil
-	instance.CreationTimestamp = metav1.Now()
-	if err := verifyLegacyCRCIdentity(instance, vm); err == nil {
-		t.Fatal("resource predating the instance was accepted")
-	}
-}
-
 func TestCRCRecordedParentsProtectDependentCleanup(t *testing.T) {
 	ctx := context.Background()
-	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: policyTestInstanceName, Namespace: pullSecretTestNamespace, UID: crcTestInstanceUID, Finalizers: []string{instanceFinalizer}, DeletionTimestamp: timePointer(time.Now())}, Status: brokerv1alpha1.ClusterInstanceStatus{CRC: &brokerv1alpha1.CRCBackingStatus{VMName: "recorded-vm", DataVolumeName: "recorded-disk"}}}
-	vm := &kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: "recorded-vm", Namespace: instance.Namespace, UID: "vm", OwnerReferences: resources.InstanceOwnerReferences(instance)}}
-	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{Name: "recorded-disk", Namespace: instance.Namespace, UID: "disk", OwnerReferences: resources.InstanceOwnerReferences(instance)}}
+	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: policyTestInstanceName, Namespace: pullSecretTestNamespace, UID: crcTestInstanceUID, Finalizers: []string{instanceFinalizer}, DeletionTimestamp: timePointer(time.Now())}, Status: brokerv1alpha1.ClusterInstanceStatus{CRC: &brokerv1alpha1.CRCBackingStatus{}}}
+	vm := &kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: resources.VMName(instance.Name), Namespace: instance.Namespace, UID: "vm", OwnerReferences: resources.InstanceOwnerReferences(instance)}}
+	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{Name: resources.DataVolumeName(instance.Name), Namespace: instance.Namespace, UID: "disk", OwnerReferences: resources.InstanceOwnerReferences(instance)}}
 	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Namespace: instance.Namespace, UID: "vmi", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(vm, kubevirtv1.SchemeGroupVersion.WithKind("VirtualMachine"))}}}
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: dv.Name, Namespace: instance.Namespace, UID: "pvc", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(dv, cdiv1beta1.SchemeGroupVersion.WithKind("DataVolume"))}}}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "launcher", Namespace: instance.Namespace, UID: "pod", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(vmi, kubevirtv1.SchemeGroupVersion.WithKind("VirtualMachineInstance"))}}}
@@ -184,41 +160,5 @@ func TestCRCJobWithoutLabelsStillHoldsRBAC(t *testing.T) {
 	}
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: instance.Namespace, Name: resources.CRCAgentAccountName(instance.Name)}, &corev1.ServiceAccount{}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestLegacyCRCAgentCanFinishWithoutSelectingAnotherBundleKey(t *testing.T) {
-	ctx := context.Background()
-	instance, job, objects := agentDiagnosticFixture()
-	instance.Spec.Type = brokerv1alpha1.TopologyCRC
-	instance.Spec.Template.CRCVersion = "legacy-version"
-	instance.Status.Provisioning = testProvisioningAuthorization()
-	instance.Status.Provisioning.Legacy = true
-	instance.Status.APIEndpoint = "https://api.legacy.test"
-	vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: instance.Name, Namespace: instance.Namespace, UID: "vmi-uid", OwnerReferences: resources.InstanceOwnerReferences(instance)}, Status: kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running, Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{{IP: "192.0.2.99"}}}}
-	objects = append(objects, instance, job, vmi)
-	c := newCRCRecoveryFakeClient(t, objects...)
-	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	if _, err := r.ensureCRCIdentity(ctx, instance, "api.legacy.test"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.ensureCRCBacking(ctx, instance, "", "pull"); err != nil {
-		t.Fatalf("legacy Job was blocked by an absent CRCBundle: %v", err)
-	}
-	current := &batchv1.Job{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(job), current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Spec.Template.Spec.ServiceAccountName != job.Spec.Template.Spec.ServiceAccountName {
-		t.Fatal("legacy account changed")
-	}
-	if err := c.Delete(ctx, current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.ensureCRCBacking(ctx, instance, "", "pull"); !isCRCBootKeyError(err) {
-		t.Fatalf("unverified legacy recovery was allowed: %v", err)
-	}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(job), current); !apierrors.IsNotFound(err) {
-		t.Fatal("legacy Job was recreated with an unverified key")
 	}
 }

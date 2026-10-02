@@ -42,20 +42,20 @@ import (
 const (
 	crcTestInstanceUID         = "instance-uid"
 	crcTestBundleSSHKeyDataKey = "id_rsa"
-	crcTestAgentServiceAccount = "agent-account"
 	crcTestAgentPodName        = "agent-pod"
-	crcTestJobNameLabel        = "job-name"
+	crcTestJobNameLabel        = "batch.kubernetes.io/job-name"
 	crcTestInstanceKind        = clusterInstanceKind
 )
 
 func agentDiagnosticFixture() (*brokerv1alpha1.ClusterInstance, *batchv1.Job, []client.Object) {
 	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "tenant", UID: crcTestInstanceUID}}
 	job := resources.BuildCRCAgentJob(instance, "192.0.2.1", "vmi-uid", "ssh", crcTestBundleSSHKeyDataKey, "identity", "agent-image", "api.test", "pull")
-	controller := true
-	job.OwnerReferences = []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: &controller}}
-	job.Spec.Template.Spec.ServiceAccountName = crcTestAgentServiceAccount
+	account := resources.CRCAgentAccountName(instance.Name)
 	objects := []client.Object{
-		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: crcTestAgentServiceAccount, Namespace: instance.Namespace}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: account, Namespace: instance.Namespace, OwnerReferences: resources.InstanceOwnerReferences(instance)}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentBindingName(instance.Name), Namespace: instance.Namespace, OwnerReferences: resources.InstanceOwnerReferences(instance)},
+			RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: crcAgentRoleKind, Name: resources.CRCAgentClusterRole()},
+			Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: account, Namespace: instance.Namespace}}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ssh", Namespace: instance.Namespace}, Data: map[string][]byte{crcTestBundleSSHKeyDataKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: instance.Namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pull", Namespace: instance.Namespace}},
@@ -103,7 +103,7 @@ func TestInspectCRCAgentStartupAndRecovery(t *testing.T) {
 func TestInspectCRCAgentPrerequisiteCanRecover(t *testing.T) {
 	ctx := context.Background()
 	instance, job, objects := agentDiagnosticFixture()
-	objects = objects[1:] // no ServiceAccount
+	objects = objects[2:] // no ServiceAccount or RoleBinding
 	c := newCRCRecoveryFakeClient(t, objects...)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	check := func(want string) {
@@ -114,13 +114,12 @@ func TestInspectCRCAgentPrerequisiteCanRecover(t *testing.T) {
 		}
 	}
 	check("AgentPrerequisiteMissing")
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: crcTestAgentServiceAccount, Namespace: instance.Namespace}}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentAccountName(instance.Name), Namespace: instance.Namespace}}
 	if err := c.Create(ctx, sa); err != nil {
 		t.Fatal(err)
 	}
-	check("AgentPodPending")
-	// Instance-owned accounts require their own binding. A legacy account
-	// without an instance owner does not require that binding.
+	check("AgentPrerequisiteMissing")
+	// Instance-owned accounts need a RoleBinding to the agent ClusterRole.
 	sa.OwnerReferences = []metav1.OwnerReference{{APIVersion: brokerv1alpha1.GroupVersion.String(), Kind: crcTestInstanceKind, Name: instance.Name, UID: instance.UID, Controller: ptrBool(true)}}
 	if err := c.Update(ctx, sa); err != nil {
 		t.Fatal(err)
@@ -168,7 +167,7 @@ func TestInspectCRCAgentCompletedHandoff(t *testing.T) {
 func TestInspectCRCAgentFailedJobNamesPod(t *testing.T) {
 	instance, job, objects := agentDiagnosticFixture()
 	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded"}}
-	objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "failed-pod", Namespace: job.Namespace, UID: types.UID("pod-uid"), Labels: map[string]string{"job-name": job.Name}}})
+	objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "failed-pod", Namespace: job.Namespace, UID: types.UID("pod-uid"), Labels: map[string]string{crcTestJobNameLabel: job.Name}}})
 	c := newCRCRecoveryFakeClient(t, objects...)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	_, err := r.inspectCRCAgent(context.Background(), instance, job, false)
@@ -185,7 +184,7 @@ func TestReconcileCRCAgentPrerequisiteClearsBlockedStatus(t *testing.T) {
 	instance.Spec.Template.BundleSSHKeyRef = &corev1.LocalObjectReference{Name: "ssh"}
 	instance.Spec.Template.Memory = testMemory
 	instance.Spec.Template.Cores = 4
-	objects = append(objects[1:], instance, job,
+	objects = append(objects[2:], instance, job,
 		&kubevirtv1.VirtualMachine{ObjectMeta: metav1.ObjectMeta{Name: resources.VMName(instance.Name), Namespace: instance.Namespace}, Status: kubevirtv1.VirtualMachineStatus{Ready: true}},
 		&kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: resources.VMName(instance.Name), Namespace: instance.Namespace, UID: "vmi-uid"}, Status: kubevirtv1.VirtualMachineInstanceStatus{Phase: kubevirtv1.Running, Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{{IP: "192.0.2.1"}}}},
 		&configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}},
@@ -214,14 +213,6 @@ func TestReconcileCRCAgentPrerequisiteClearsBlockedStatus(t *testing.T) {
 			}
 		}
 		t.Fatalf("expected %s while provisioning, got %+v", want, got.Status)
-	}
-	assertReason("AgentPrerequisiteMissing")
-	retained := &batchv1.Job{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(job), retained); err != nil || retained.Spec.Template.Spec.ServiceAccountName != crcTestAgentServiceAccount {
-		t.Fatalf("legacy Job account changed: %v %+v", err, retained.Spec.Template.Spec)
-	}
-	if err := c.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: crcTestAgentServiceAccount, Namespace: instance.Namespace}}); err != nil {
-		t.Fatal(err)
 	}
 	assertReason("AgentPodPending")
 

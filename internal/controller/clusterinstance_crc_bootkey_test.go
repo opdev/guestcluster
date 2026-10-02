@@ -325,14 +325,14 @@ func TestCRCBootKeyChecksSourcePVCUntilCloneSucceeds(t *testing.T) {
 	}
 }
 
-func TestCRCBootKeyRequiresBindingForLegacyDisk(t *testing.T) {
+func TestCRCBootKeyRejectsExistingDiskWithoutBinding(t *testing.T) {
 	ctx := context.Background()
 	instance, bundle, pvc, source := bootKeyFixture()
 	dv := &cdiv1beta1.DataVolume{ObjectMeta: metav1.ObjectMeta{Name: resources.DataVolumeName(instance.Name), Namespace: instance.Namespace}}
 	c := newCRCRecoveryFakeClient(t, instance, bundle, pvc, source, dv)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	if _, _, err := r.ensureCRCBootKey(ctx, instance, dv); err == nil || !strings.Contains(err.Error(), "without a recorded disk/key binding") {
-		t.Fatalf("expected unverified legacy disk to be blocked, got %v", err)
+		t.Fatalf("expected existing disk without a binding to be blocked, got %v", err)
 	}
 }
 
@@ -345,6 +345,7 @@ func TestCRCBootKeyWaitsForAgentJobBeforeCleanup(t *testing.T) {
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
 		Name: resources.CRCAgentJobName(instance.Name, "running"), Namespace: instance.Namespace,
 		Labels: resources.CommonLabels(instance), Finalizers: []string{"test.example/hold"},
+		OwnerReferences: resources.InstanceOwnerReferences(instance),
 	}}
 	if err := c.Create(ctx, job); err != nil {
 		t.Fatal(err)

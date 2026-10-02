@@ -61,16 +61,10 @@ func InstanceOwnerReferences(instance *brokerv1alpha1.ClusterInstance) []metav1.
 }
 
 func CRCVMName(instance *brokerv1alpha1.ClusterInstance) string {
-	if instance.Status.CRC != nil && instance.Status.CRC.VMName != "" {
-		return instance.Status.CRC.VMName
-	}
 	return VMName(instance.Name)
 }
 
 func CRCDiskName(instance *brokerv1alpha1.ClusterInstance) string {
-	if instance.Status.CRC != nil && instance.Status.CRC.DataVolumeName != "" {
-		return instance.Status.CRC.DataVolumeName
-	}
 	return DataVolumeName(instance.Name)
 }
 
@@ -121,10 +115,6 @@ func VMName(instanceName string) string {
 func DataVolumeName(instanceName string) string {
 	return instanceName + "-rootdisk"
 }
-
-// DefaultHostedClusterNamespace is the legacy shared namespace for HyperShift
-// HostedCluster/NodePool objects. New instances use their source namespace.
-const DefaultHostedClusterNamespace = "clusters"
 
 // HostedClusterName is the deterministic name of the HostedCluster backing a
 // topology=hcp-* ClusterInstance. Using the ClusterInstance's own name keeps
@@ -240,14 +230,6 @@ func CRCAPIRouteName(instanceName string) string {
 	return instanceName + "-crc-api"
 }
 
-// APIServerHostname returns the legacy, instance-name-only hostname used by
-// older HyperShift provisioned clusters. Keep it for endpoint recovery:
-// existing HostedClusters, serving certificates, Routes, and kubeconfigs
-// can still use this value. New endpoints use APIHostname.
-func APIServerHostname(instanceName, mgmtIngressDomain string) string {
-	return fmt.Sprintf("api-%s.%s", instanceName, mgmtIngressDomain)
-}
-
 const (
 	apiHostnameHashLength     = 16 // 64 bits of the SHA-256 identity hash.
 	dns1123LabelMaxLength     = 63
@@ -361,30 +343,12 @@ const PullSecretDataKey = ".dockerconfigjson"
 // another source, including the management cluster's own pull secret.
 const ClusterPullSecretName = "pull-secret"
 
-// DefaultPullSecretName is the deterministic name of the per-instance Secret
-// the operator creates when it must materialize a pull secret in a different
-// namespace, such as the HostedCluster namespace for hcp. See resolvePullSecret
-// in the ClusterInstance controller.
-func DefaultPullSecretName(instanceName string) string {
-	return instanceName + "-pull-secret"
-}
-
 // HCPWorkerSSHKeyDataKey is the conventional data key that a
 // ClusterTemplate.HCPWorkerSSHKeyRef Secret must carry its SSH public key
 // under. This matches HyperShift's own HostedCluster.spec.sshKey Secret
 // convention exactly (see hypershift-operator/controllers/hostedcluster,
 // which rejects a referenced Secret that is missing this key).
 const HCPWorkerSSHKeyDataKey = "id_rsa.pub"
-
-// HCPWorkerSSHKeyName is the deterministic name of the per-instance copy of
-// ClusterTemplate.HCPWorkerSSHKeyRef. The operator creates this copy in the
-// HostedCluster's own namespace. HostedCluster.spec.sshKey must reference a
-// Secret in that same namespace, because LocalObjectReference resolves
-// relative to the referencing object. As a result, the operator cannot use
-// the Secret referenced by HCPWorkerSSHKeyRef directly.
-func HCPWorkerSSHKeyName(instanceName string) string {
-	return instanceName + "-hcp-ssh-key"
-}
 
 // BundleSSHKeyDataKey lists the conventional data keys under which a
 // ClusterTemplate.BundleSSHKeyRef Secret stores the CRC bundle's SSH private

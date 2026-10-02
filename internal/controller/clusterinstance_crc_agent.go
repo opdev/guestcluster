@@ -40,7 +40,7 @@ type crcAgentFailure struct{ message string }
 func (e crcAgentFailure) Error() string { return e.message }
 
 // inspectCRCAgent reads the existing Job template, including its account and
-// Secret names. This also supports Jobs created with the legacy shared account.
+// Secret names.
 // Only reasons, not event messages or Secret contents, go into status.
 func (r *ClusterInstanceReconciler) inspectCRCAgent(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, job *batchv1.Job, handoffReady bool) (*metav1.Condition, error) {
 	for _, c := range job.Status.Conditions {
@@ -67,7 +67,7 @@ func (r *ClusterInstanceReconciler) crcAgentJobFailure(ctx context.Context, job 
 	}
 	podName := ""
 	for _, pod := range pods.Items {
-		if pod.Labels["batch.kubernetes.io/job-name"] == job.Name || pod.Labels["job-name"] == job.Name {
+		if pod.Labels["batch.kubernetes.io/job-name"] == job.Name {
 			podName = fmt.Sprintf(" Pod %s", pod.Name)
 			break
 		}
@@ -127,6 +127,10 @@ func (r *ClusterInstanceReconciler) inspectCRCAgentPrerequisites(ctx context.Con
 	if account == "" {
 		account = "default"
 	}
+	if account != resources.CRCAgentAccountName(instance.Name) {
+		detail := fmt.Sprintf("Job uses unexpected ServiceAccount %s", account)
+		return crcAgentDiagnostic(ctx, job, metav1.ConditionFalse, "AgentPrerequisiteMissing", detail), nil
+	}
 	sa := &corev1.ServiceAccount{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: job.Namespace, Name: account}, sa); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -135,16 +139,13 @@ func (r *ClusterInstanceReconciler) inspectCRCAgentPrerequisites(ctx context.Con
 		detail := fmt.Sprintf("ServiceAccount %s/%s is missing", job.Namespace, account)
 		return crcAgentDiagnostic(ctx, job, metav1.ConditionFalse, "AgentPrerequisiteMissing", detail), nil
 	}
-	if condition, err := r.inspectCRCAgentRoleBinding(ctx, instance, job, sa, account); condition != nil || err != nil {
+	if condition, err := r.inspectCRCAgentRoleBinding(ctx, instance, job, account); condition != nil || err != nil {
 		return condition, err
 	}
 	return r.inspectCRCAgentVolumeSecrets(ctx, job)
 }
 
-func (r *ClusterInstanceReconciler) inspectCRCAgentRoleBinding(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, job *batchv1.Job, sa *corev1.ServiceAccount, account string) (*metav1.Condition, error) {
-	if !metav1.IsControlledBy(sa, instance) {
-		return nil, nil
-	}
+func (r *ClusterInstanceReconciler) inspectCRCAgentRoleBinding(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, job *batchv1.Job, account string) (*metav1.Condition, error) {
 	bindings := &rbacv1.RoleBindingList{}
 	if err := r.platformReader().List(ctx, bindings, client.InNamespace(job.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing agent RoleBindings in %s: %w", job.Namespace, err)
@@ -212,11 +213,7 @@ func (r *ClusterInstanceReconciler) listCRCAgentPods(ctx context.Context, job *b
 	if err := r.List(ctx, pods, client.InNamespace(job.Namespace), client.MatchingLabels{"batch.kubernetes.io/job-name": job.Name}); err != nil {
 		return nil, fmt.Errorf("listing Pods for %s: %w", location, err)
 	}
-	legacy := &corev1.PodList{}
-	if err := r.List(ctx, legacy, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
-		return nil, fmt.Errorf("listing legacy Pods for %s: %w", location, err)
-	}
-	return append(pods.Items, legacy.Items...), nil
+	return pods.Items, nil
 }
 
 func inspectCRCAgentPodStatus(ctx context.Context, job *batchv1.Job, pod *corev1.Pod) *metav1.Condition {

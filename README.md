@@ -370,35 +370,27 @@ kubectl -n <instance-namespace> create secret generic crc-pull-secret --from-fil
 then reference it via `template.pullSecretRef.name: crc-pull-secret`. The
 Secret must be in the same namespace as the `ClusterInstance`. It is a
 user-provided input, separate from the operator-managed CRC boot-key copy.
-New `hcp` instances reference the local Secret directly. Legacy instances
-whose HostedCluster is in another namespace use a per-instance copy.
+CRC and HCP resources use this local Secret directly.
 
-#### HCP placement and upgrades
+#### HCP placement
 
-New HostedClusters, NodePools, and generated serving-certificate Secrets live
-in the ClusterInstance namespace. The operator records that location in
-`status.hyperShift` before it creates backing resources. Local pull-secret
-and optional worker SSH-key inputs remain user-owned and survive instance
-cleanup. Generated local resources have instance owner references.
-
-Existing HCP instances in `clusters` keep their recorded location and API
-endpoint. If legacy location status is incomplete, the operator checks existing
-backing resources and source identity before it records the location. It
-reports ambiguous ownership as a conflict instead of adopting or deleting
-another instance's resources.
+HostedClusters, NodePools, and generated serving-certificate Secrets live in
+the ClusterInstance namespace. Local pull-secret and optional worker SSH-key
+inputs remain user-owned and survive instance cleanup. Generated local
+resources have instance owner references.
 
 The API Route stays in the HyperShift control-plane namespace, derived from
-the recorded HostedCluster namespace and name. This combined name must fit
+the source namespace and instance name. This combined name must fit
 the 63-character namespace limit; the NodePool name must also fit its DNS
 label limit. The operator rejects unsupported names, existing unclaimed
 control-plane namespaces, and collisions caused by concatenation or dot
 replacement before new provisioning. API hostnames use
 the source namespace and instance name and remain fixed after selection.
 
-HyperShift must watch the source namespaces that contain new HostedClusters.
+HyperShift must watch the source namespaces that contain HostedClusters.
 The upstream HyperShift manager uses a cluster-wide cache by default; verify
 the scope of the installed HyperShift deployment before enabling HCP pools
-outside `clusters`. The guestcluster manager needs its cluster-wide
+outside its watch scope. The guestcluster manager needs its cluster-wide
 HostedCluster, NodePool, Secret, Route, and Namespace permissions in both
 direct-install and OLM deployments.
 
@@ -550,10 +542,7 @@ cluster. So `ensureCRCAPIRoute` (in
 
   An existing Route keeps its assigned hostname. The controller uses that
   hostname for the CRC identity certificate and the `crc-agent` configuration,
-  so an upgrade does not change an active instance's endpoint. An instance
-  with a Route created under the old naming rule keeps that hostname until it
-  is deleted and recreated. This also means that an old conflicting Route is
-  not renamed automatically.
+  so route repair does not change an active instance's endpoint.
 
   If the Route is deleted while the instance still exists, the controller
   restores the hostname from the instance's identity certificate. It validates
@@ -579,7 +568,7 @@ down the `ClusterInstance` itself, which happens outright on lease
 release (see
 [Recycle semantics](#recycle-semantics-no-leftover-operatorcsv)).
 `status.apiEndpoint` holds this Route's URL (see "Known limitations"
-below; earlier versions left this field empty for the `crc` topology).
+below).
 The Job runs to completion once per boot. On failure, the Job's
 `backoffLimit` (2) governs retries. A fresh Job always accompanies a
 fresh VM.
@@ -610,11 +599,11 @@ independent, at two different times: one is a build-time Makefile
 variable, the other a runtime environment variable, read through
 `os.Getenv` by both `ClusterInstanceReconciler` and `CRCBundleReconciler`.
 
-Each new crc-agent Job uses an instance-owned ServiceAccount and RoleBinding
-in the instance namespace. The manager creates these resources. Its Secret
+Each crc-agent Job uses an instance-owned ServiceAccount and RoleBinding in
+the instance namespace. The manager creates these resources. Its Secret
 permissions initially cover the whole namespace; they are not limited to one
-instance. Legacy Jobs retain their shared account until they finish. See
-[CRC agent permissions](docs/crc-agent-rbac.md). For the bundle-prep Job, the image must
+instance. See [CRC agent permissions](docs/crc-agent-rbac.md). For the
+bundle-prep Job, the image must
 run as the `bundle-prep` `ServiceAccount`, scoped to `secrets` and
 `configmaps` access in the operator's namespace only.
 
@@ -642,8 +631,7 @@ On the **management** OpenShift cluster:
   Create a `pull-secret` Secret in each pool or instance namespace, for
   example by copying `openshift-config/pull-secret` (see
   [Pull secret](#pull-secret)). `template.pullSecretRef` can name a different
-  Secret in that same namespace. New HCP instances use the local Secret;
-  legacy HCP instances in another namespace use a copy.
+  Secret in that same namespace. HCP instances use the local Secret directly.
 - For `crc` pools specifically: an extracted CRC bundle `crc.qcow2`,
   hosted at an HTTP-reachable URL, and a `Secret` holding its
   `id_ecdsa_crc` SSH key (`template.bundleSSHKeyRef`) when you use the
@@ -870,7 +858,6 @@ kubectl -n <namespace> get events --sort-by=.lastTimestamp
 kubectl -n <namespace> logs job/<job> -c crc-agent --all-containers=false
 ```
 
-For older Jobs, use `-l job-name=<job>` if the first Pod query is empty.
 Check the ServiceAccount and mounted Secret names in the Job Pod template.
 The manager does not have access to the agent's internal error details; use
 the agent logs to find the exact cause of a failed handoff. Do not share

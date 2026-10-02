@@ -400,9 +400,9 @@ func registerClusterLeaseVerificationSpecs(topology brokerv1alpha1.ClusterTopolo
 
 			reconcileLease(deleting)
 			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lease), &brokerv1alpha1.ClusterLease{})
-			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "legacy Releasing lease should be fully deleted")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "Releasing lease should be fully deleted")
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), &brokerv1alpha1.ClusterInstance{})
-			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claimed instance should be deleted for legacy Releasing lease")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the claimed instance should be deleted for Releasing lease")
 		})
 	})
 }

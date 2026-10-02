@@ -45,7 +45,7 @@ func TestResolvePullSecretUsesNamespaceDefault(t *testing.T) {
 	c := newHyperShiftFakeClient(t, instance, secret)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	name, err := r.resolvePullSecret(ctx, instance, instance.Namespace)
+	name, err := r.resolvePullSecret(ctx, instance)
 	if err != nil {
 		t.Fatalf("resolvePullSecret: %v", err)
 	}
@@ -54,13 +54,13 @@ func TestResolvePullSecretUsesNamespaceDefault(t *testing.T) {
 	}
 
 	copy := &corev1.Secret{}
-	err = c.Get(ctx, client.ObjectKey{Name: resources.DefaultPullSecretName(instance.Name), Namespace: instance.Namespace}, copy)
+	err = c.Get(ctx, client.ObjectKey{Name: instance.Name + "-pull-secret", Namespace: instance.Namespace}, copy)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("default pull secret copy error = %v, want NotFound", err)
 	}
 }
 
-func TestResolvePullSecretCopiesNamespaceDefaultForHyperShift(t *testing.T) {
+func TestResolvePullSecretUsesLocalInputForHyperShift(t *testing.T) {
 	ctx := context.Background()
 	instance := &brokerv1alpha1.ClusterInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "hcp-default-pull-secret", Namespace: pullSecretTestNamespace},
@@ -73,21 +73,21 @@ func TestResolvePullSecretCopiesNamespaceDefaultForHyperShift(t *testing.T) {
 	c := newHyperShiftFakeClient(t, instance, secret)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	name, err := r.resolvePullSecret(ctx, instance, resources.DefaultHostedClusterNamespace)
+	name, err := r.resolvePullSecret(ctx, instance)
 	if err != nil {
 		t.Fatalf("resolvePullSecret: %v", err)
 	}
-	wantName := resources.DefaultPullSecretName(instance.Name)
+	wantName := resources.ClusterPullSecretName
 	if name != wantName {
 		t.Fatalf("pull secret name = %q, want %q", name, wantName)
 	}
 
-	copy := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Name: wantName, Namespace: resources.DefaultHostedClusterNamespace}, copy); err != nil {
-		t.Fatalf("getting copied pull secret: %v", err)
+	local := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Name: wantName, Namespace: instance.Namespace}, local); err != nil {
+		t.Fatalf("getting local pull-secret input: %v", err)
 	}
-	if string(copy.Data[resources.PullSecretDataKey]) != string(secretData) {
-		t.Fatalf("copied pull secret data = %q, want %q", copy.Data[resources.PullSecretDataKey], secretData)
+	if string(local.Data[resources.PullSecretDataKey]) != string(secretData) {
+		t.Fatalf("local pull-secret data = %q, want %q", local.Data[resources.PullSecretDataKey], secretData)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestResolvePullSecretReportsMissingNamespaceDefault(t *testing.T) {
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	_, err := r.resolvePullSecret(ctx, instance, instance.Namespace)
+	_, err := r.resolvePullSecret(ctx, instance)
 	if err == nil || !strings.Contains(err.Error(), "tenant/pull-secret") {
 		t.Fatalf("resolvePullSecret error = %v, want missing tenant/pull-secret", err)
 	}

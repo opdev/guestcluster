@@ -162,8 +162,18 @@ func TestCRCAgentClusterRoleNameReachesManager(t *testing.T) {
 	found := false
 	for _, value := range env {
 		entry := value.(map[string]interface{})
+		if entry["name"] == "CRC_AGENT_SERVICE_ACCOUNT" {
+			t.Fatal("manager Deployment sets the removed shared CRC agent account")
+		}
 		if entry["name"] == "CRC_AGENT_CLUSTER_ROLE" && entry["value"] == role.GetName() {
 			found = true
+		}
+	}
+	for _, obj := range objects {
+		if (obj.GetKind() == "ServiceAccount" && obj.GetName() == "guestcluster-operator-crc-agent") ||
+			(obj.GetKind() == "Role" && obj.GetName() == "guestcluster-operator-crc-agent-role") ||
+			(obj.GetKind() == "RoleBinding" && obj.GetName() == "guestcluster-operator-crc-agent-rolebinding") {
+			t.Fatalf("rendered removed shared CRC agent resource: %s %s", obj.GetKind(), obj.GetName())
 		}
 	}
 	if !found {
@@ -194,6 +204,9 @@ func TestOLMAgentRoleNameAndManagerPermissions(t *testing.T) {
 	found := false
 	for _, value := range env {
 		entry := value.(map[string]interface{})
+		if entry["name"] == "CRC_AGENT_SERVICE_ACCOUNT" {
+			t.Fatal("OLM Deployment sets the removed shared CRC agent account")
+		}
 		if entry["name"] == "CRC_AGENT_CLUSTER_ROLE" && entry["value"] == role.GetName() {
 			found = true
 		}

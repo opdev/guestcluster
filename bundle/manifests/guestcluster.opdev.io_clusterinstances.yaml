@@ -158,9 +158,9 @@ spec:
                   hcpWorkerSSHKeyRef:
                     description: |-
                       HCPWorkerSSHKeyRef optionally references a Secret in the ClusterInstance's namespace
-                      containing an SSH public key under the data key "id_rsa.pub". New HCP
+                      containing an SSH public key under the data key "id_rsa.pub". HCP
                       HostedClusters reference this Secret directly; the operator does not own
-                      or delete it. Legacy HostedClusters in "clusters" use a managed copy.
+                      or delete it.
                       The key is injected for the "core" user on every HCP NodePool worker (via
                       HostedCluster.spec.sshKey, see HyperShift's own ignition machine-config
                       generation). This field is only a debugging convenience (e.g. to inspect a
@@ -222,10 +222,9 @@ spec:
                       is optional. When unset, the operator uses the "pull-secret" Secret in the
                       ClusterInstance's namespace. An administrator or pool creator must provide that
                       Secret, for example by copying the management cluster's pull secret into the
-                      pool namespace. New HCP HostedClusters reference this local Secret directly.
-                      Legacy HCP instances in another namespace use a per-instance copy. Set this
-                      field explicitly to use a different credential (e.g. one scoped to a
-                      disconnected mirror).
+                      pool namespace. HCP HostedClusters reference this local Secret directly.
+                      Set this field explicitly to use a different credential (e.g. one scoped
+                      to a disconnected mirror).
                     properties:
                       name:
                         default: ""
@@ -388,20 +387,12 @@ spec:
                     - secretNamespace
                     - secretUID
                     type: object
-                  dataVolumeName:
-                    description: DataVolumeName is the CDI DataVolume providing the
-                      VM's root disk.
-                    type: string
                   dataVolumeUID:
                     type: string
                   sshEndpoint:
                     description: |-
                       SSHEndpoint is host:port used by the crc-agent to reach the CRC VM for
                       post-boot fixups and kubeconfig extraction.
-                    type: string
-                  vmName:
-                    description: VMName is the name of the KubeVirt VirtualMachine
-                      running the CRC/SNO bundle.
                     type: string
                   vmUID:
                     description: |-
@@ -413,26 +404,6 @@ spec:
                       VMIUID identifies the VirtualMachineInstance for which the crc-agent
                       completed its post-boot handoff.
                     type: string
-                type: object
-              hyperShift:
-                description: HyperShift holds backing-object references for topology=hcp
-                  instances.
-                properties:
-                  hostedClusterName:
-                    description: HostedClusterName is the name of the hypershift.openshift.io/v1beta1
-                      HostedCluster.
-                    type: string
-                  hostedClusterNamespace:
-                    description: |-
-                      HostedClusterNamespace records the namespace holding the HostedCluster.
-                      New instances use their source namespace. Legacy instances can use "clusters".
-                    type: string
-                  nodePoolNames:
-                    description: NodePoolNames lists the NodePool(s) backing this
-                      instance's workers.
-                    items:
-                      type: string
-                    type: array
                 type: object
               kubeconfigSecretRef:
                 description: |-
@@ -495,14 +466,7 @@ spec:
                 description: |-
                   Provisioning records the durable authorization to start backing-resource
                   creation. Removing the namespace opt-in label does not revoke this decision.
-                  An absent value does not prove that a legacy instance has not started;
-                  the controller verifies existing backing resources before migration.
                 properties:
-                  legacy:
-                    description: |-
-                      Legacy means existing backing-resource identity was verified during upgrade.
-                      It permits verified adoption of resources from older controller versions.
-                    type: boolean
                   startedAt:
                     description: StartedAt is when the controller authorized provisioning.
                     format: date-time

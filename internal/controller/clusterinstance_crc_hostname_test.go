@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -113,42 +112,32 @@ func TestEnsureCRCAPIRouteUsesRecordedEndpointWithoutIdentity(t *testing.T) {
 	}
 }
 
-func TestEnsureCRCAPIRouteKeepsExistingHostname(t *testing.T) {
+func TestEnsureCRCAPIRouteRejectsUnrecordedExistingHostname(t *testing.T) {
 	ctx := context.Background()
 	instance := &brokerv1alpha1.ClusterInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: crcHostnameTestInstanceName, Namespace: crcHostnameTestNamespace},
 	}
-	const legacyHostname = "api-crc-pool-abc123.apps.example.test"
-	legacyRoute := resources.BuildCRCAPIRoute(instance, legacyHostname, resources.CRCAPIServiceName(instance.Name))
+	const existingHostname = "api-crc-pool-abc123.apps.example.test"
+	existingRoute := resources.BuildCRCAPIRoute(instance, existingHostname, resources.CRCAPIServiceName(instance.Name))
 	ingress := &configv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{Name: statusIngressName},
 		Spec:       configv1.IngressSpec{Domain: statusIngressDomain},
 	}
-	c := newCRCRecoveryFakeClient(t, instance, legacyRoute, ingress)
+	c := newCRCRecoveryFakeClient(t, instance, existingRoute, ingress)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 
-	hostname, err := r.ensureCRCAPIRoute(ctx, instance)
-	if err != nil {
-		t.Fatalf("ensureCRCAPIRoute: %v", err)
-	}
-	if hostname != legacyHostname {
-		t.Fatalf("hostname = %q, want existing hostname %q", hostname, legacyHostname)
-	}
-	storedRoute := &routev1.Route{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyRoute), storedRoute); err != nil {
-		t.Fatalf("getting existing CRC API Route: %v", err)
-	}
-	if storedRoute.Spec.Host != legacyHostname {
-		t.Errorf("existing Route host = %q, want %q", storedRoute.Spec.Host, legacyHostname)
+	if _, err := r.ensureCRCAPIRoute(ctx, instance); err == nil {
+		t.Fatal("accepted an existing Route without a recorded endpoint")
 	}
 }
 
-func TestEnsureCRCAPIRouteRestoresIdentityHostname(t *testing.T) {
+func TestEnsureCRCAPIRouteRestoresRecordedHostname(t *testing.T) {
 	for _, domain := range []string{"apps.example.test", "apps.changed.test", ""} {
 		t.Run("ingress="+domain, func(t *testing.T) {
 			ctx := context.Background()
 			instance := &brokerv1alpha1.ClusterInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: crcHostnameTestInstanceName, Namespace: crcHostnameTestNamespace, UID: crcTestInstanceUID},
+				Status:     brokerv1alpha1.ClusterInstanceStatus{APIEndpoint: "https://api-crc-pool-abc123.apps.example.test"},
 			}
 			const hostname = "api-crc-pool-abc123.apps.example.test"
 			route := resources.BuildCRCAPIRoute(instance, hostname, resources.CRCAPIServiceName(instance.Name))
@@ -199,46 +188,6 @@ func TestEnsureCRCAPIRouteRestoresIdentityHostname(t *testing.T) {
 			}
 			if !reflect.DeepEqual(before.Data, after.Data) {
 				t.Fatal("Route recovery changed the identity credentials")
-			}
-		})
-	}
-}
-
-func TestEnsureCRCAPIRouteRejectsInvalidRecoveryIdentity(t *testing.T) {
-	for _, invalid := range []string{"certificate", "client key", "owner"} {
-		t.Run(invalid, func(t *testing.T) {
-			ctx := context.Background()
-			instance := &brokerv1alpha1.ClusterInstance{
-				ObjectMeta: metav1.ObjectMeta{Name: "crc-instance", Namespace: crcHostnameTestNamespace, UID: crcTestInstanceUID},
-			}
-			ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
-			c := newCRCRecoveryFakeClient(t, instance, ingress)
-			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-			name, err := r.ensureCRCIdentity(ctx, instance, "api-crc-instance.apps.example.test")
-			if err != nil {
-				t.Fatalf("creating identity: %v", err)
-			}
-			secret := &corev1.Secret{}
-			if err := c.Get(ctx, client.ObjectKey{Namespace: instance.Namespace, Name: name}, secret); err != nil {
-				t.Fatalf("getting identity: %v", err)
-			}
-			switch invalid {
-			case "certificate":
-				secret.Data[resources.CRCIdentityServingCertKey] = []byte("invalid certificate")
-			case "client key":
-				secret.Data[resources.CRCIdentityClientPrivateKey] = []byte("invalid key")
-			case "owner":
-				secret.OwnerReferences[0].UID = "another-instance-uid"
-			}
-			if err := c.Update(ctx, secret); err != nil {
-				t.Fatalf("updating identity: %v", err)
-			}
-			if _, err := r.ensureCRCAPIRoute(ctx, instance); err == nil {
-				t.Fatal("Route recovery accepted an invalid identity")
-			}
-			key := client.ObjectKey{Namespace: instance.Namespace, Name: resources.CRCAPIRouteName(instance.Name)}
-			if err := c.Get(ctx, key, &routev1.Route{}); !apierrors.IsNotFound(err) {
-				t.Fatalf("expected no Route after failed recovery, got error %v", err)
 			}
 		})
 	}

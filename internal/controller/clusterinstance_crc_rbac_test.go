@@ -15,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const crcAgentRoleKind = "ClusterRole"
+
 func agentRBACInstance(name, namespace, uid string) *brokerv1alpha1.ClusterInstance {
 	return &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: types.UID(uid)}}
 }
@@ -74,8 +76,8 @@ func TestCRCAgentRBACReconcileAndCleanup(t *testing.T) {
 			t.Fatalf("retry on %s: %v", vmiUID, err)
 		}
 	}
-	// An active legacy Job holds the permissions until its Pods are gone.
-	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: resources.CRCAgentJobName(a.Name, "old-vmi"), Namespace: a.Namespace, Labels: resources.CommonLabels(a)}, Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{ServiceAccountName: resources.CRCAgentServiceAccount()}}}}
+	// An active Job holds the permissions until its Pods are gone.
+	job := resources.BuildCRCAgentJob(a, "192.0.2.1", "active-vmi", "ssh", "key", "identity", "image", "api", "pull")
 	if err := c.Create(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func assertCRCAgentBinding(t *testing.T, ctx context.Context, c client.Client, i
 	}
 	if !metav1.IsControlledBy(binding, instance) || binding.Subjects[0].Namespace != instance.Namespace ||
 		binding.Subjects[0].Name != resources.CRCAgentAccountName(instance.Name) ||
-		binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != resources.CRCAgentClusterRole() {
+		binding.RoleRef.Kind != crcAgentRoleKind || binding.RoleRef.Name != resources.CRCAgentClusterRole() {
 		t.Fatalf("wrong binding: %+v", binding)
 	}
 }

@@ -10,14 +10,8 @@ resources:
 - cdi_clone_source_role.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
-# crc-agent is the ServiceAccount used by the per-ClusterInstance crc-agent Jobs
-# (topology=crc only, see internal/resources.BuildCRCAgentJob); it needs only
-# namespace-scoped secrets access (to publish/update the raw kubeconfig Secret).
-- crc_agent_service_account.yaml
-- crc_agent_role.yaml
-- crc_agent_role_binding.yaml
-# Keep the shared account, Role and binding for active Jobs from earlier releases.
-# New Jobs use instance-owned accounts with namespaced bindings to this role.
+# CRC agent Jobs use instance-owned ServiceAccounts and RoleBindings. The
+# manager binds each account to this shared ClusterRole.
 - crc_agent_instance_role.yaml
 # bundle-prep is the ServiceAccount used by the one-time-per-version CRCBundle
 # bundle-prep Job (see internal/resources.BuildBundlePrepJob); it needs

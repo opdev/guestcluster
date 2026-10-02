@@ -18,14 +18,11 @@ package controller
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"net/url"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -83,10 +80,8 @@ func (r *ClusterInstanceReconciler) ensureAPIHostnameAvailable(ctx context.Conte
 	return nil
 }
 
-// instanceForRoute maps managed API Route changes back to their source
-// ClusterInstance. New Routes carry the source namespace label. For legacy
-// Routes, CRC Routes share the instance namespace and HCP Routes use the
-// HostedControlPlane namespace.
+// instanceForRoute maps a managed API Route change back to its source
+// ClusterInstance. Every managed Route carries its source namespace label.
 func (r *ClusterInstanceReconciler) instanceForRoute(ctx context.Context, obj client.Object) []reconcile.Request {
 	route, ok := obj.(*routev1.Route)
 	if !ok || route.Labels[resources.LabelManagedBy] != resources.ManagerName {
@@ -99,31 +94,7 @@ func (r *ClusterInstanceReconciler) instanceForRoute(ctx context.Context, obj cl
 	if instanceNamespace := route.Labels[resources.LabelInstanceNamespace]; instanceNamespace != "" {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: instanceName, Namespace: instanceNamespace}}}
 	}
-
-	legacyCRC := &brokerv1alpha1.ClusterInstance{}
-	if err := r.Get(ctx, types.NamespacedName{Name: instanceName, Namespace: route.Namespace}, legacyCRC); err == nil && legacyCRC.Spec.Type == brokerv1alpha1.TopologyCRC {
-		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: legacyCRC.Name, Namespace: legacyCRC.Namespace}}}
-	}
-
-	instances := &brokerv1alpha1.ClusterInstanceList{}
-	if err := r.List(ctx, instances); err != nil {
-		return nil
-	}
-	requests := make([]reconcile.Request, 0, 1)
-	for i := range instances.Items {
-		instance := &instances.Items[i]
-		if instance.Spec.Type != brokerv1alpha1.TopologyHCP || instance.Name != instanceName {
-			continue
-		}
-		namespace, name := hcpLocation(instance)
-		if resources.HostedControlPlaneNamespace(namespace, name) != route.Namespace {
-			continue
-		}
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: instance.Name, Namespace: instance.Namespace},
-		})
-	}
-	return requests
+	return nil
 }
 
 func routeIsAdmitted(route *routev1.Route) bool {
@@ -140,48 +111,8 @@ func routeIsAdmitted(route *routev1.Route) bool {
 	return false
 }
 
-func (r *ClusterInstanceReconciler) getServingCertHostname(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, namespace, secretName string) (string, bool, error) {
-	key := types.NamespacedName{Name: secretName, Namespace: namespace}
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, key, secret); apierrors.IsNotFound(err) {
-		return "", false, nil
-	} else if err != nil {
-		return "", false, fmt.Errorf("getting KAS serving certificate Secret %s/%s: %w", namespace, secretName, err)
-	}
-	if err := r.verifyHCPResource(ctx, instance, secret); err != nil {
-		return "", false, err
-	}
-	block, _ := pem.Decode(secret.Data[corev1.TLSCertKey])
-	if block == nil {
-		return "", false, apiEndpointConflict("KAS serving certificate Secret %s/%s has no valid certificate PEM", namespace, secretName)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", false, apiEndpointConflict("KAS serving certificate Secret %s/%s has an invalid certificate: %v", namespace, secretName, err)
-	}
-	if len(cert.DNSNames) != 1 || cert.DNSNames[0] == "" {
-		return "", false, apiEndpointConflict("KAS serving certificate Secret %s/%s must have exactly one DNS SAN", namespace, secretName)
-	}
-	return cert.DNSNames[0], true, nil
-}
-
 func routeOwnedByInstance(route *routev1.Route, instance *brokerv1alpha1.ClusterInstance) bool {
-	if route.Labels[resources.LabelManagedBy] != resources.ManagerName || route.Labels[resources.LabelInstance] != instance.Name {
-		return false
-	}
-	if sourceNamespace := route.Labels[resources.LabelInstanceNamespace]; sourceNamespace != "" && sourceNamespace != instance.Namespace {
-		return false
-	}
-	return true
-}
-
-func ensureHostnameEvidenceMatches(hostname, source string, evidence *string) error {
-	if hostname == "" {
-		return nil
-	}
-	if *evidence != "" && *evidence != hostname {
-		return apiEndpointConflict("conflicting API hostnames in existing resources: %q and %q from %s", *evidence, hostname, source)
-	}
-	*evidence = hostname
-	return nil
+	return route.Labels[resources.LabelManagedBy] == resources.ManagerName &&
+		route.Labels[resources.LabelInstance] == instance.Name &&
+		route.Labels[resources.LabelInstanceNamespace] == instance.Namespace
 }
