@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -111,7 +110,7 @@ func (r *CRCBundleReconciler) reconcilePending(ctx context.Context, bundle *brok
 	}
 
 	bundleURL, sha256URL := resources.ResolveBundleURLs(bundle)
-	job := resources.BuildBundlePrepJob(bundle, bundleURL, sha256URL, bundlePrepImage())
+	job := resources.BuildBundlePrepJob(bundle, bundleURL, sha256URL, crcAgentImage())
 	if err := controllerutil.SetControllerReference(bundle, job, r.Scheme); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference on bundle-prep Job: %w", err)
 	}
@@ -330,19 +329,6 @@ func crcBundleArch(bundle *brokerv1alpha1.CRCBundle) string {
 		return bundle.Spec.Arch
 	}
 	return resources.DefaultCRCArch
-}
-
-// bundlePrepImage resolves the container image used for the bundle-prep
-// Job. Per project decision, bundlePrepImage reuses the crc-agent image,
-// because that image already needs curl/tar/jq/oc-adjacent tooling for its
-// own native post-boot fixups. So bundlePrepImage shares
-// CRCAgentImageEnvVar/DefaultCRCAgentImage rather than introducing a
-// separate override point.
-func bundlePrepImage() string {
-	if img := os.Getenv(resources.CRCAgentImageEnvVar); img != "" {
-		return img
-	}
-	return resources.DefaultCRCAgentImage
 }
 
 // SetupWithManager sets up the controller with the Manager.

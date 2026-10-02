@@ -69,8 +69,8 @@ type crcResult struct {
 	apiEndpoint string
 }
 
-// crcAgentImage resolves the container image for the per-instance
-// crc-agent Job. Operator deployments can override it with the
+// crcAgentImage resolves the container image used by CRC agent and bundle-prep
+// Jobs. Operator deployments can override it with the
 // CRC_AGENT_IMAGE environment variable on the manager Deployment (an
 // OLM RELATED_IMAGE-style override point). If unset, crcAgentImage falls
 // back to a default image for local and dev use.
@@ -304,7 +304,7 @@ func (r *ClusterInstanceReconciler) ensureCRCAgentBackingForJob(ctx context.Cont
 	if len(kubeconfig) == 0 {
 		return res, nil // not published yet; checkCRCKubeconfigHandoff already logged why
 	}
-	if err := checkCRCAPIReady(ctx, kubeconfig); err != nil {
+	if err := checkGuestAPIReady(ctx, kubeconfig); err != nil {
 		log.Info("CRC guest API is not externally ready yet", "error", err)
 		return res, nil
 	}
@@ -425,7 +425,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 			if len(kubeconfig) == 0 {
 				return r.markCRCAPIUnavailable(ctx, instance, "KubeconfigUnavailable", "published CRC kubeconfig is missing")
 			}
-			if err := checkCRCAPIReady(ctx, kubeconfig); err != nil {
+			if err := checkGuestAPIReady(ctx, kubeconfig); err != nil {
 				return r.markCRCAPIUnavailable(ctx, instance, "GuestAPIUnavailable", fmt.Sprintf("guest API readiness check failed: %v", err))
 			}
 			return r.markReady(ctx, instance, ocpVersion, instance.Status.APIEndpoint, kubeconfig)
@@ -435,7 +435,7 @@ func (r *ClusterInstanceReconciler) reconcileReadyCRC(ctx context.Context, insta
 	if err := r.verifyCRCResource(ctx, instance, published); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := checkCRCAPIReady(ctx, published.Data[resources.KubeconfigSecretKey]); err != nil {
+	if err := checkGuestAPIReady(ctx, published.Data[resources.KubeconfigSecretKey]); err != nil {
 		return r.markCRCAPIUnavailable(ctx, instance, "GuestAPIUnavailable", fmt.Sprintf("guest API readiness check failed: %v", err))
 	}
 	if err := r.recordCRCAPIHealth(ctx, instance, metav1.ConditionTrue, "GuestAPIReady", "guest API readiness check succeeded"); err != nil {
@@ -542,10 +542,6 @@ func checkGuestAPIReady(ctx context.Context, kubeconfig []byte) error {
 		return fmt.Errorf("guest API returned %s", response.Status)
 	}
 	return nil
-}
-
-func checkCRCAPIReady(ctx context.Context, kubeconfig []byte) error {
-	return checkGuestAPIReady(ctx, kubeconfig)
 }
 
 // invalidateCRCReadiness removes the one-shot handoff from a previous VMI so
