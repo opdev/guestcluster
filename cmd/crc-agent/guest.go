@@ -142,14 +142,46 @@ search crc.testing
 nameserver {{ .IP }}
 `
 
+// crcGrowRootPartitionCommand grows the RHCOS root partition. growpart returns
+// status 1 when the partition has no more space to use, so treat that as a
+// successful no-op.
+const crcGrowRootPartitionCommand = `if growpart "/dev/${root_disk}" "${partition_number}"; then
+  :
+else
+  growpart_status=$?
+  if [ "${growpart_status}" -ne 1 ]; then
+    echo "growpart failed with status ${growpart_status}" >&2
+    exit "${growpart_status}"
+  fi
+  echo "root partition already uses all available disk space"
+fi`
+
+// crcRootFilesystemResizeCommand grows the RHCOS root partition (partition
+// label "root") and its XFS filesystem. RHCOS mounts /sysroot read-only in
+// the host mount namespace, so remount it in a private namespace before XFS
+// growth. The operation is safe to repeat when crc-agent retries.
+const crcRootFilesystemResizeCommand = `sh -ceu '
+root_partition=$(readlink -f /dev/disk/by-partlabel/root)
+root_disk=$(lsblk --noheadings --raw --output PKNAME "${root_partition}")
+root_partition_name=$(basename "${root_partition}")
+partition_number=$(cat "/sys/class/block/${root_partition_name}/partition")
+if [ -z "${root_disk}" ] || [ -z "${partition_number}" ]; then
+  echo "could not identify the root disk and partition from ${root_partition}" >&2
+  exit 1
+fi
+` + crcGrowRootPartitionCommand + `
+unshare --mount sh -c "mount -o remount,rw /sysroot && xfs_growfs /sysroot"
+'`
+
 // RunGuestFixups performs all guest-root steps in order:
-//  1. Write the dnsmasq config and start dnsmasq.
-//  2. Rewrite /etc/resolv.conf so the VM resolves *.crc.testing.
-//  3. Generate a new ed25519 SSH keypair and swap it onto authorized_keys.
-//  4. Start the kubelet.
-//  5. Install the stable admin CA and client cert, then patch the cluster
+//  1. Grow the instance disk's root partition and XFS filesystem.
+//  2. Write the dnsmasq config and start dnsmasq.
+//  3. Rewrite /etc/resolv.conf so the VM resolves *.crc.testing.
+//  4. Generate a new ed25519 SSH keypair and swap it onto authorized_keys.
+//  5. Start the kubelet.
+//  6. Install the stable admin CA and client cert, then patch the cluster
 //     (the CA bootstrap step; this uses oc on the guest for this one step).
-//  6. Return the new kubeconfig bytes and crypto material for the
+//  7. Return the new kubeconfig bytes and crypto material for the
 //     typed-client stage.
 //
 // runner must be connected with the original bundle SSH key. After
@@ -164,32 +196,38 @@ func RunGuestFixups(ctx context.Context, runner *Runner, cfg config, log logrLik
 	}
 	log.Info("guest: detected internal IP", "guestIP", guestIP, "externalHost", cfg.SSHHost)
 
-	// 1. dnsmasq
+	// 1. Grow the guest partition and filesystem
+	log.Info("guest: growing root filesystem")
+	if err := growGuestRootFilesystem(runner); err != nil {
+		return nil, fmt.Errorf("grow root filesystem: %w", err)
+	}
+
+	// 2. dnsmasq
 	log.Info("guest: configuring dnsmasq")
 	if err := setupDnsmasq(runner, guestIP); err != nil {
 		return nil, fmt.Errorf("setup dnsmasq: %w", err)
 	}
 
-	// 2. Guest DNS: point the guest at our dnsmasq for *.crc.testing.
+	// 3. Guest DNS: point the guest at our dnsmasq for *.crc.testing.
 	log.Info("guest: configuring guest DNS")
 	if err := configureGuestDNS(runner, guestIP); err != nil {
 		return nil, fmt.Errorf("configure guest DNS: %w", err)
 	}
 
-	// 3. SSH key swap: generate a new ed25519 keypair.
+	// 4. SSH key swap: generate a new ed25519 keypair.
 	log.Info("guest: swapping SSH key")
 	newSigner, err := generateAndSwapSSHKey(runner)
 	if err != nil {
 		return nil, fmt.Errorf("swap SSH key: %w", err)
 	}
 
-	// 4. Start kubelet
+	// 5. Start kubelet
 	log.Info("guest: starting kubelet")
 	if err := startKubelet(runner); err != nil {
 		return nil, fmt.Errorf("start kubelet: %w", err)
 	}
 
-	// 5. CA bootstrap: install the stable CA+client cert and patch the cluster.
+	// 6. CA bootstrap: install the stable CA+client cert and patch the cluster.
 	log.Info("guest: installing stable admin CA and client cert")
 	res, err := bootstrapCA(ctx, runner, cfg.Identity)
 	if err != nil {
@@ -197,6 +235,13 @@ func RunGuestFixups(ctx context.Context, runner *Runner, cfg config, log logrLik
 	}
 	res.SSHSigner = newSigner
 	return res, nil
+}
+
+func growGuestRootFilesystem(runner privilegedRunner) error {
+	if _, err := runner.RunPrivileged(crcRootFilesystemResizeCommand); err != nil {
+		return fmt.Errorf("resizing RHCOS root partition and XFS filesystem: %w", err)
+	}
+	return nil
 }
 
 // setupDnsmasq writes /etc/dnsmasq.d/crc-dnsmasq.conf and enables and starts

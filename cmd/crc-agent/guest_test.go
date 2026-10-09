@@ -19,6 +19,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +167,80 @@ func TestRetryRunPrivilegedTimeoutIncludesLastError(t *testing.T) {
 	if runner.calls == 0 {
 		t.Fatal("expected at least one attempt")
 	}
+}
+
+func TestGrowGuestRootFilesystemUsesRetrySafeRHCOSCommands(t *testing.T) {
+	runner := &fakePrivilegedRunner{run: func(cmd string, _ int) (string, error) {
+		for _, part := range []string{
+			"/dev/disk/by-partlabel/root",
+			"growpart",
+			"growpart_status",
+			"/sys/class/block/${root_partition_name}/partition",
+			"unshare --mount",
+			"mount -o remount,rw /sysroot",
+			"xfs_growfs /sysroot",
+		} {
+			if !strings.Contains(cmd, part) {
+				return "", errors.New("missing command part: " + part)
+			}
+		}
+		return "grown", nil
+	}}
+
+	if err := growGuestRootFilesystem(runner); err != nil {
+		t.Fatalf("growGuestRootFilesystem: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("command calls = %d, want 1", runner.calls)
+	}
+}
+
+func TestGrowGuestRootFilesystemReportsFailure(t *testing.T) {
+	want := errors.New("growpart failed")
+	runner := &fakePrivilegedRunner{run: func(_ string, _ int) (string, error) {
+		return "", want
+	}}
+
+	if err := growGuestRootFilesystem(runner); !errors.Is(err, want) {
+		t.Fatalf("error = %v, want wrapped growpart failure", err)
+	}
+}
+
+func TestGrowRootPartitionNoChangeStillGrowsFilesystem(t *testing.T) {
+	output, err := runRootPartitionGrowthShell(t, 1)
+	if err != nil {
+		t.Fatalf("shell command failed: %v (output: %s)", err, output)
+	}
+	if !strings.Contains(output, "filesystem-grown") {
+		t.Fatalf("filesystem growth did not run after growpart returned no change: %s", output)
+	}
+}
+
+func TestGrowRootPartitionPropagatesGrowpartErrors(t *testing.T) {
+	output, err := runRootPartitionGrowthShell(t, 2)
+	if err == nil {
+		t.Fatalf("growpart error was ignored (output: %s)", output)
+	}
+	exitError, ok := err.(*exec.ExitError)
+	if !ok || exitError.ExitCode() != 2 {
+		t.Fatalf("error = %v, want exit status 2", err)
+	}
+	if strings.Contains(output, "filesystem-grown") {
+		t.Fatalf("filesystem growth ran after growpart failed: %s", output)
+	}
+}
+
+func runRootPartitionGrowthShell(t *testing.T, growpartStatus int) (string, error) {
+	t.Helper()
+	script := `growpart() { return ` + strconv.Itoa(growpartStatus) + `; }
+xfs_growfs() { printf filesystem-grown; }
+root_disk=vda
+partition_number=4
+` + crcGrowRootPartitionCommand + `
+xfs_growfs /sysroot`
+	cmd := exec.Command("/bin/sh", "-ceu", script)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 type fakePrivilegedRunner struct {
