@@ -211,7 +211,8 @@ spec:
                   memory:
                     description: |-
                       Memory is the amount of memory allocated per VM (CRC VM, or each HyperShift KubeVirt
-                      worker VM). E.g. "16Gi" for CRC, "6Gi" for a HyperShift worker.
+                      worker VM) expressed as a Kubernetes quantity, for example "16Gi".
+                    pattern: ^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$
                     type: string
                   nodePoolReplicas:
                     description: |-
@@ -261,8 +262,10 @@ spec:
                       not apply).
                     type: string
                   rootVolumeSize:
-                    description: RootVolumeSize is the size of the root disk (e.g.
-                      "35Gi").
+                    description: |-
+                      RootVolumeSize is the size of the root disk expressed as a Kubernetes quantity,
+                      for example "30Gi". When omitted, a topology-specific default is used.
+                    pattern: ^$|^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$
                     type: string
                   storageClassName:
                     description: StorageClassName is the StorageClass used for VM

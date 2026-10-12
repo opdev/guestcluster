@@ -115,8 +115,9 @@ type ClusterTemplate struct {
 	ControllerAvailabilityPolicy ControllerAvailabilityPolicy `json:"controllerAvailabilityPolicy,omitempty"`
 
 	// Memory is the amount of memory allocated per VM (CRC VM, or each HyperShift KubeVirt
-	// worker VM). E.g. "16Gi" for CRC, "6Gi" for a HyperShift worker.
+	// worker VM) expressed as a Kubernetes quantity, for example "16Gi".
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
 	Memory string `json:"memory"`
 
 	// Cores is the number of vCPUs allocated per VM.
@@ -124,8 +125,10 @@ type ClusterTemplate struct {
 	// +kubebuilder:validation:Minimum=1
 	Cores int32 `json:"cores"`
 
-	// RootVolumeSize is the size of the root disk (e.g. "35Gi").
+	// RootVolumeSize is the size of the root disk expressed as a Kubernetes quantity,
+	// for example "30Gi". When omitted, a topology-specific default is used.
 	// +optional
+	// +kubebuilder:validation:Pattern="^$|^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
 	RootVolumeSize string `json:"rootVolumeSize,omitempty"`
 
 	// PullSecretRef references a Secret in the ClusterInstance's namespace containing

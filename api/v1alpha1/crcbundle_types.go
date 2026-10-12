@@ -80,8 +80,11 @@ type CRCBundleSpec struct {
 
 	// GoldenVolumeSize is the size of the golden PVC. It stores the raw disk image
 	// at /disk.img. Defaults to 35Gi (CRC bundle disks are typically ~31Gi).
+	// The value must parse as a Kubernetes quantity. An empty value selects
+	// the default.
 	// +optional
 	// +kubebuilder:default="35Gi"
+	// +kubebuilder:validation:Pattern="^$|^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
 	GoldenVolumeSize string `json:"goldenVolumeSize,omitempty"`
 }
 
