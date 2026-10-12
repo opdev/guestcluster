@@ -47,7 +47,10 @@ func TestBuildCRCDataVolumeFromBundleUsesCrossNamespaceGoldenPVC(t *testing.T) {
 		},
 	}
 
-	dv := BuildCRCDataVolumeFromBundle(instance, bundle)
+	dv, err := BuildCRCDataVolumeFromBundle(instance, bundle)
+	if err != nil {
+		t.Fatalf("BuildCRCDataVolumeFromBundle: %v", err)
+	}
 	if dv.Namespace != instanceNamespace {
 		t.Fatalf("DataVolume namespace = %q, want instance namespace %q", dv.Namespace, instanceNamespace)
 	}

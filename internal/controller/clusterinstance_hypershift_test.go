@@ -196,7 +196,10 @@ func TestHCPAPIEndpointIsRecordedAndSharedAcrossResources(t *testing.T) {
 	if err := c.Update(ctx, hc); err != nil {
 		t.Fatalf("updating HostedCluster status: %v", err)
 	}
-	nodePool := resources.BuildNodePool(instance, hc.Name, hc.Namespace, 1)
+	nodePool, err := resources.BuildNodePool(instance, hc.Name, hc.Namespace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := controllerutil.SetControllerReference(hc, nodePool, c.Scheme()); err != nil {
 		t.Fatal(err)
 	}

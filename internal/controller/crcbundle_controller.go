@@ -102,7 +102,11 @@ func (r *CRCBundleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func (r *CRCBundleReconciler) reconcilePending(ctx context.Context, bundle *brokerv1alpha1.CRCBundle) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensurePVC(ctx, bundle, resources.BuildGoldenPVC(bundle)); err != nil {
+	goldenPVC, err := resources.BuildGoldenPVC(bundle)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.ensurePVC(ctx, bundle, goldenPVC); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.ensurePVC(ctx, bundle, resources.BuildScratchPVC(bundle)); err != nil {

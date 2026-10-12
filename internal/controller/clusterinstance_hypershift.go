@@ -448,34 +448,14 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 	}
 
 	replicas := desiredReplicas(instance)
-	np := resources.BuildNodePool(instance, existingHC.Name, namespace, replicas)
-	np.Name = hcpNodePoolName(instance)
-	if err := controllerutil.SetControllerReference(existingHC, np, r.Scheme); err != nil {
+	existingNP, err := r.ensureHCPNodePool(ctx, instance, existingHC, namespace, replicas)
+	if err != nil {
 		return res, err
 	}
-	if err := r.setHCPResourceOwner(instance, np); err != nil {
-		return res, err
-	}
-	existingNP := &hyperv1beta1.NodePool{}
-	if err := r.Get(ctx, types.NamespacedName{Name: np.Name, Namespace: np.Namespace}, existingNP); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, np); err != nil {
-			return res, fmt.Errorf("creating NodePool %s/%s: %w", np.Namespace, np.Name, err)
-		}
-		log.Info("created NodePool", "nodePool", np.Name, "replicas", replicas)
+	if existingNP == nil {
+		// The NodePool was just created. Readiness checks start on the
+		// next reconcile, once its status exists.
 		return res, nil
-	} else if err != nil {
-		return res, fmt.Errorf("getting NodePool %s/%s: %w", np.Namespace, np.Name, err)
-	}
-	if err := r.verifyHCPResource(ctx, instance, existingNP); err != nil {
-		return res, err
-	}
-
-	if existingNP.Spec.Replicas == nil || *existingNP.Spec.Replicas != replicas {
-		existingNP.Spec.Replicas = &replicas
-		if err := r.Update(ctx, existingNP); err != nil {
-			return res, fmt.Errorf("scaling NodePool %s/%s to %d replicas: %w", np.Namespace, np.Name, replicas, err)
-		}
-		log.Info("updated NodePool replica count", "nodePool", np.Name, "replicas", replicas)
 	}
 
 	if !resources.HostedClusterAvailable(existingHC) {
@@ -483,7 +463,7 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 		return res, nil
 	}
 	if existingNP.Status.Replicas < replicas {
-		log.Info("NodePool has not reached desired replica count", "nodePool", np.Name, "current", existingNP.Status.Replicas, "desired", replicas)
+		log.Info("NodePool has not reached desired replica count", "nodePool", existingNP.Name, "current", existingNP.Status.Replicas, "desired", replicas)
 		return res, nil
 	}
 
@@ -567,6 +547,47 @@ func (r *ClusterInstanceReconciler) ensureHyperShiftBacking(ctx context.Context,
 		res.ocpVersion = existingHC.Status.Version.Desired.Version
 	}
 	return res, nil
+}
+
+// ensureHCPNodePool creates the HyperShift NodePool that backs instance's
+// workers when it does not exist, and scales it to the desired replica
+// count when it does. It returns the current NodePool, or nil when the
+// NodePool was just created and its status is not worth reading yet.
+func (r *ClusterInstanceReconciler) ensureHCPNodePool(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, existingHC *hyperv1beta1.HostedCluster, namespace string, replicas int32) (*hyperv1beta1.NodePool, error) {
+	log := logf.FromContext(ctx)
+	np, err := resources.BuildNodePool(instance, existingHC.Name, namespace, replicas)
+	if err != nil {
+		return nil, err
+	}
+	np.Name = hcpNodePoolName(instance)
+	if err := controllerutil.SetControllerReference(existingHC, np, r.Scheme); err != nil {
+		return nil, err
+	}
+	if err := r.setHCPResourceOwner(instance, np); err != nil {
+		return nil, err
+	}
+	existingNP := &hyperv1beta1.NodePool{}
+	if err := r.Get(ctx, types.NamespacedName{Name: np.Name, Namespace: np.Namespace}, existingNP); apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, np); err != nil {
+			return nil, fmt.Errorf("creating NodePool %s/%s: %w", np.Namespace, np.Name, err)
+		}
+		log.Info("created NodePool", "nodePool", np.Name, "replicas", replicas)
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("getting NodePool %s/%s: %w", np.Namespace, np.Name, err)
+	}
+	if err := r.verifyHCPResource(ctx, instance, existingNP); err != nil {
+		return nil, err
+	}
+
+	if existingNP.Spec.Replicas == nil || *existingNP.Spec.Replicas != replicas {
+		existingNP.Spec.Replicas = &replicas
+		if err := r.Update(ctx, existingNP); err != nil {
+			return nil, fmt.Errorf("scaling NodePool %s/%s to %d replicas: %w", np.Namespace, np.Name, replicas, err)
+		}
+		log.Info("updated NodePool replica count", "nodePool", np.Name, "replicas", replicas)
+	}
+	return existingNP, nil
 }
 
 func (r *ClusterInstanceReconciler) createHostedCluster(ctx context.Context, instance *brokerv1alpha1.ClusterInstance, pullSecretName, hostname string) error {

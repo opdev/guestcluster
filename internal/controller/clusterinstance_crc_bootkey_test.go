@@ -298,7 +298,11 @@ func TestCRCBootKeyChecksSourcePVCUntilCloneSucceeds(t *testing.T) {
 			c := newCRCRecoveryFakeClient(t, instance, bundle, pvc, source)
 			r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 			bindAndCopyBootKey(t, ctx, r, instance)
-			dv := boundCRCSource(instance, crcBootKeyBinding(instance)).dv
+			bound, err := boundCRCSource(instance, crcBootKeyBinding(instance))
+			if err != nil {
+				t.Fatal(err)
+			}
+			dv := bound.dv
 			dv.Status.Phase = tc.phase
 			if err := c.Create(ctx, dv); err != nil {
 				t.Fatal(err)
@@ -309,7 +313,7 @@ func TestCRCBootKeyChecksSourcePVCUntilCloneSucceeds(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := r.ensureCRCBacking(ctx, instance, "", "pull-secret")
+			_, err = r.ensureCRCBacking(ctx, instance, "", "pull-secret")
 			if tc.wantError {
 				if err == nil || !strings.Contains(err.Error(), "changed UID while DataVolume") {
 					t.Fatalf("expected pending clone to reject replaced source PVC, got %v", err)

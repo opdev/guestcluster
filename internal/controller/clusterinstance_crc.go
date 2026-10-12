@@ -97,14 +97,18 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 	log := logf.FromContext(ctx)
 	tmpl := instance.Spec.Template
 	if tmpl.CRCVersion == "" {
+		dv, err := resources.BuildCRCDataVolume(instance)
+		if err != nil {
+			return nil, err
+		}
 		return &crcDataVolumeSource{
-			dv:            resources.BuildCRCDataVolume(instance),
+			dv:            dv,
 			sshSecretName: tmpl.BundleSSHKeyRef.Name,
 			sshDataKey:    bundleKeyDataKey,
 		}, nil
 	}
 	if binding := crcBootKeyBinding(instance); binding != nil {
-		return boundCRCSource(instance, binding), nil
+		return boundCRCSource(instance, binding)
 	}
 
 	arch := tmpl.CRCArch
@@ -131,8 +135,12 @@ func (r *ClusterInstanceReconciler) resolveCRCDataVolumeSource(ctx context.Conte
 	if bundle.Status.DiskImagePVCNamespace == "" || bundle.Status.DiskImagePVCRef == nil || bundle.Status.DiskImagePVCRef.Name == "" || bundle.Status.SSHKeySecretRef == nil || bundle.Status.SSHKeySecretRef.Name == "" {
 		return nil, crcBootKeyError{fmt.Errorf("CRCBundle %s has invalid or incomplete Ready disk/SSH key references", bundleName)}
 	}
+	dv, err := resources.BuildCRCDataVolumeFromBundle(instance, bundle)
+	if err != nil {
+		return nil, err
+	}
 	return &crcDataVolumeSource{
-		dv:            resources.BuildCRCDataVolumeFromBundle(instance, bundle),
+		dv:            dv,
 		sshSecretName: resources.CRCBootKeySecretName(instance.Name),
 		sshDataKey:    crcBundleSSHKeyDataKey, // fixed data key written by the bundle-prep script
 	}, nil
@@ -171,13 +179,20 @@ func (r *ClusterInstanceReconciler) ensureCRCBacking(ctx context.Context, instan
 		}
 		// The bundle may have been re-prepared since this instance's disk
 		// was selected. Always clone from the recorded PVC.
-		dv = boundCRCSource(instance, crcBootKeyBinding(instance)).dv
+		bound, err := boundCRCSource(instance, crcBootKeyBinding(instance))
+		if err != nil {
+			return res, err
+		}
+		dv = bound.dv
 	}
 
 	if _, err := r.ensureCRCObject(ctx, instance, dv); err != nil {
 		return res, err
 	}
-	vm := resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
+	vm, err := resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
+	if err != nil {
+		return res, err
+	}
 	obj, err := r.ensureCRCObject(ctx, instance, vm)
 	if err != nil {
 		return res, err

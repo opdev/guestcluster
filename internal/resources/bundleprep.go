@@ -101,10 +101,14 @@ func ScratchPVCName(version, arch string) string {
 // DataVolumeSourcePVC and have KubeVirt boot it exactly as if CDI had
 // imported it directly. ReadWriteOnce is sufficient, because CDI's
 // host-assisted clone mounts the source PVC once per clone, sequentially.
-func BuildGoldenPVC(bundle *brokerv1alpha1.CRCBundle) *corev1.PersistentVolumeClaim {
+func BuildGoldenPVC(bundle *brokerv1alpha1.CRCBundle) (*corev1.PersistentVolumeClaim, error) {
 	size := bundle.Spec.GoldenVolumeSize
 	if size == "" {
 		size = defaultGoldenVolumeSize
+	}
+	storage, err := parseQuantity(size, "spec.goldenVolumeSize")
+	if err != nil {
+		return nil, err
 	}
 	arch := bundleArch(bundle)
 
@@ -118,7 +122,7 @@ func BuildGoldenPVC(bundle *brokerv1alpha1.CRCBundle) *corev1.PersistentVolumeCl
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(size),
+					corev1.ResourceStorage: storage,
 				},
 			},
 		},
@@ -126,7 +130,7 @@ func BuildGoldenPVC(bundle *brokerv1alpha1.CRCBundle) *corev1.PersistentVolumeCl
 	if bundle.Spec.StorageClassName != "" {
 		pvc.Spec.StorageClassName = &bundle.Spec.StorageClassName
 	}
-	return pvc
+	return pvc, nil
 }
 
 // BuildScratchPVC constructs the transient PersistentVolumeClaim (in
