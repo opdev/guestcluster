@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -301,6 +302,9 @@ func (r *ClusterInstanceReconciler) reconcileLeaseRefProjection(ctx context.Cont
 }
 
 func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if err := validateTemplateQuantities(instance.Spec.Template); err != nil {
+		return r.markFailedWithReason(ctx, instance, "InvalidTemplate", err)
+	}
 	if err := r.recordCRCIdentity(ctx, instance); err != nil {
 		return r.markFailedWithReason(ctx, instance, "ResourceOwnershipConflict", err)
 	}
@@ -382,6 +386,9 @@ func (r *ClusterInstanceReconciler) reconcileCRC(ctx context.Context, instance *
 }
 
 func (r *ClusterInstanceReconciler) reconcileHyperShift(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (ctrl.Result, error) {
+	if err := validateTemplateQuantities(instance.Spec.Template); err != nil {
+		return r.markFailedWithReason(ctx, instance, "InvalidTemplate", err)
+	}
 	previousStatus := instance.Status.DeepCopy()
 	pullSecretName, err := r.resolvePullSecret(ctx, instance)
 	if err != nil {
@@ -591,6 +598,27 @@ func (r *ClusterInstanceReconciler) resolvePullSecret(ctx context.Context, insta
 		return "", fmt.Errorf("pull secret %s/%s is missing data key %q", instance.Namespace, secretName, resources.PullSecretDataKey)
 	}
 	return secretName, nil
+}
+
+// validateTemplateQuantities checks that the template's quantity fields
+// parse as Kubernetes quantities.
+//
+// The CRD pattern-validates these fields at admission time, so this check
+// is normally unreachable. It exists for objects that predate that
+// validation: those fail here, with a distinct condition reason, before
+// reconcileCRC or reconcileHyperShift creates any backing object. The
+// builders in internal/resources parse the same fields again as a second
+// safety net, so a bad value can never panic the reconciler.
+func validateTemplateQuantities(tmpl brokerv1alpha1.ClusterTemplate) error {
+	if _, err := resource.ParseQuantity(tmpl.Memory); err != nil {
+		return fmt.Errorf("template.memory: %w", err)
+	}
+	if tmpl.RootVolumeSize != "" {
+		if _, err := resource.ParseQuantity(tmpl.RootVolumeSize); err != nil {
+			return fmt.Errorf("template.rootVolumeSize: %w", err)
+		}
+	}
+	return nil
 }
 
 // validateBundleSSHKey fails fast if the instance's template does not
