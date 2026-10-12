@@ -414,7 +414,10 @@ func TestHCPRefusesNodePoolWithWrongHostedClusterOwner(t *testing.T) {
 	instance.UID = "instance-uid"
 	c := newHyperShiftFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
-	np := resources.BuildNodePool(instance, resources.HostedClusterName(instance.Name, instance.Namespace), instance.Namespace, 1)
+	np, err := resources.BuildNodePool(instance, resources.HostedClusterName(instance.Name, instance.Namespace), instance.Namespace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	foreign := &hyperv1beta1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Name: "another-cluster", Namespace: instance.Namespace, UID: "foreign-uid"}}
 	if err := controllerutil.SetControllerReference(foreign, np, c.Scheme()); err != nil {
 		t.Fatal(err)

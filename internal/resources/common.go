@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -54,6 +55,23 @@ const LabelPool = "opdev.io/pool"
 
 // ManagerName is the value written into LabelManagedBy.
 const ManagerName = "guestcluster-operator"
+
+// parseQuantity converts a CRD quantity string, for example "16Gi", into a
+// resource.Quantity.
+//
+// The CRD schemas pattern-validate these strings at admission time (see the
+// Memory, RootVolumeSize, and GoldenVolumeSize markers in api/v1alpha1).
+// parseQuantity is the run-time safety net for objects that predate that
+// validation: it returns an error instead of panicking, so one bad value
+// cannot crash the reconciler. field names the CRD field in the error
+// message, for example "template.memory".
+func parseQuantity(value, field string) (resource.Quantity, error) {
+	quantity, err := resource.ParseQuantity(value)
+	if err != nil {
+		return resource.Quantity{}, fmt.Errorf("invalid %s value %q: %w", field, value, err)
+	}
+	return quantity, nil
+}
 
 // InstanceOwnerReferences is only for resources in the instance namespace.
 func InstanceOwnerReferences(instance *brokerv1alpha1.ClusterInstance) []metav1.OwnerReference {

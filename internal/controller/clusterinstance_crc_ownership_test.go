@@ -21,10 +21,19 @@ import (
 
 const replacementResourceUID = "replacement-resource"
 
-func crcOwnedObjects(instance *brokerv1alpha1.ClusterInstance) []client.Object {
+func crcOwnedObjects(t *testing.T, instance *brokerv1alpha1.ClusterInstance) []client.Object {
+	t.Helper()
+	vm, err := resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dv, err := resources.BuildCRCDataVolume(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return []client.Object{
-		resources.BuildCRCVirtualMachine(instance, resources.CRCDiskName(instance)),
-		resources.BuildCRCDataVolume(instance),
+		vm,
+		dv,
 		resources.BuildCRCAPIService(instance),
 		resources.BuildCRCAPIRoute(instance, "api.example.test", resources.CRCAPIServiceName(instance.Name)),
 		resources.BuildCRCAgentJob(instance, "192.0.2.1", "vmi", "key", "id_ecdsa", "identity", "agent", "api.example.test", "pull"),
@@ -35,7 +44,7 @@ func crcOwnedObjects(instance *brokerv1alpha1.ClusterInstance) []client.Object {
 func TestCRCOwnershipRejectsForeignReuseAndDeletion(t *testing.T) {
 	ctx := context.Background()
 	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "same-name", Namespace: pullSecretTestNamespace, UID: "current"}, Spec: brokerv1alpha1.ClusterInstanceSpec{Template: brokerv1alpha1.ClusterTemplate{Memory: testMemory, Cores: 2}}, Status: brokerv1alpha1.ClusterInstanceStatus{Provisioning: testProvisioningAuthorization()}}
-	for _, desired := range crcOwnedObjects(instance) {
+	for _, desired := range crcOwnedObjects(t, instance) {
 		for _, ownerUID := range []string{"", "old-instance"} {
 			t.Run(desired.GetName()+"/"+ownerUID, func(t *testing.T) {
 				foreign := desired.DeepCopyObject().(client.Object)

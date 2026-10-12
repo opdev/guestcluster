@@ -35,6 +35,37 @@ import (
 // the SNO control plane, etcd, and workloads.
 const defaultCRCRootVolumeSize = "80Gi"
 
+// crcStorageSpec builds the StorageSpec shared by both CRC DataVolume
+// builders. It applies the default root volume size when the template does
+// not set one, and parses the size without panicking on a bad value (see
+// parseQuantity). fallbackStorageClass is used when the template does not
+// name a StorageClass.
+func crcStorageSpec(tmpl brokerv1alpha1.ClusterTemplate, fallbackStorageClass string) (*cdiv1beta1.StorageSpec, error) {
+	size := tmpl.RootVolumeSize
+	if size == "" {
+		size = defaultCRCRootVolumeSize
+	}
+	storageQuantity, err := parseQuantity(size, "template.rootVolumeSize")
+	if err != nil {
+		return nil, err
+	}
+	storage := &cdiv1beta1.StorageSpec{
+		Resources: corev1.VolumeResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceStorage: storageQuantity,
+			},
+		},
+	}
+	if tmpl.StorageClassName != "" {
+		sc := tmpl.StorageClassName
+		storage.StorageClassName = &sc
+	} else if fallbackStorageClass != "" {
+		sc := fallbackStorageClass
+		storage.StorageClassName = &sc
+	}
+	return storage, nil
+}
+
 // BuildCRCDataVolume constructs the CDI DataVolume that provides the root
 // disk for a topology=crc ClusterInstance's VirtualMachine. The disk image
 // is imported over HTTP from Spec.Template.ReleaseImage, which for the CRC
@@ -45,24 +76,12 @@ const defaultCRCRootVolumeSize = "80Gi"
 // crc-agent's post-boot fixups (run natively, see cmd/crc-agent) bring it
 // up. Extracting the bundle and hosting crc.qcow2 at a stable HTTP URL is
 // expected to happen upstream of this operator, and is out of scope here.
-func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) *cdiv1beta1.DataVolume {
+func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) (*cdiv1beta1.DataVolume, error) {
 	tmpl := instance.Spec.Template
 
-	size := tmpl.RootVolumeSize
-	if size == "" {
-		size = defaultCRCRootVolumeSize
-	}
-
-	storage := &cdiv1beta1.StorageSpec{
-		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceStorage: resource.MustParse(size),
-			},
-		},
-	}
-	if tmpl.StorageClassName != "" {
-		sc := tmpl.StorageClassName
-		storage.StorageClassName = &sc
+	storage, err := crcStorageSpec(tmpl, "")
+	if err != nil {
+		return nil, err
 	}
 
 	return &cdiv1beta1.DataVolume{
@@ -80,7 +99,7 @@ func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) *cdiv1beta1.Da
 			},
 			Storage: storage,
 		},
-	}
+	}, nil
 }
 
 // BuildCRCDataVolumeFromBundle constructs the CDI DataVolume that provides
@@ -95,27 +114,12 @@ func BuildCRCDataVolume(instance *brokerv1alpha1.ClusterInstance) *cdiv1beta1.Da
 // bundle.Status.Phase == CRCBundlePhaseReady, and that
 // DiskImagePVCRef/DiskImagePVCNamespace are populated, before calling this
 // function.
-func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bundle *brokerv1alpha1.CRCBundle) *cdiv1beta1.DataVolume {
+func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bundle *brokerv1alpha1.CRCBundle) (*cdiv1beta1.DataVolume, error) {
 	tmpl := instance.Spec.Template
 
-	size := tmpl.RootVolumeSize
-	if size == "" {
-		size = defaultCRCRootVolumeSize
-	}
-
-	storage := &cdiv1beta1.StorageSpec{
-		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceStorage: resource.MustParse(size),
-			},
-		},
-	}
-	if tmpl.StorageClassName != "" {
-		sc := tmpl.StorageClassName
-		storage.StorageClassName = &sc
-	} else if bundle.Spec.StorageClassName != "" {
-		sc := bundle.Spec.StorageClassName
-		storage.StorageClassName = &sc
+	storage, err := crcStorageSpec(tmpl, bundle.Spec.StorageClassName)
+	if err != nil {
+		return nil, err
 	}
 
 	return &cdiv1beta1.DataVolume{
@@ -134,7 +138,7 @@ func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bund
 			},
 			Storage: storage,
 		},
-	}
+	}, nil
 }
 
 // BuildCRCVirtualMachine constructs the KubeVirt VirtualMachine running the
@@ -145,10 +149,14 @@ func BuildCRCDataVolumeFromBundle(instance *brokerv1alpha1.ClusterInstance, bund
 // flips RunStrategy to Halted/Always across a stop/start of the whole VM
 // when needed, for example to reclaim hypervisor resources for a
 // Ready-but-idle pool member.
-func BuildCRCVirtualMachine(instance *brokerv1alpha1.ClusterInstance, dvName string) *kubevirtv1.VirtualMachine {
+func BuildCRCVirtualMachine(instance *brokerv1alpha1.ClusterInstance, dvName string) (*kubevirtv1.VirtualMachine, error) {
 	tmpl := instance.Spec.Template
 	runStrategy := kubevirtv1.RunStrategyAlways
 
+	memory, err := parseQuantity(tmpl.Memory, "template.memory")
+	if err != nil {
+		return nil, err
+	}
 	cpu := *resource.NewQuantity(int64(tmpl.Cores), resource.DecimalSI)
 
 	labels := CommonLabels(instance)
@@ -171,7 +179,7 @@ func BuildCRCVirtualMachine(instance *brokerv1alpha1.ClusterInstance, dvName str
 					Domain: kubevirtv1.DomainSpec{
 						Resources: kubevirtv1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse(tmpl.Memory),
+								corev1.ResourceMemory: memory,
 								corev1.ResourceCPU:    cpu,
 							},
 						},
@@ -197,7 +205,7 @@ func BuildCRCVirtualMachine(instance *brokerv1alpha1.ClusterInstance, dvName str
 				},
 			},
 		},
-	}
+	}, nil
 }
 
 // crcAPIServicePort is the guest OpenShift API server's fixed port.

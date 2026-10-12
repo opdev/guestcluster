@@ -27,7 +27,14 @@ func crcBootKeyBinding(instance *brokerv1alpha1.ClusterInstance) *brokerv1alpha1
 	return instance.Status.CRC.BootKey
 }
 
-func boundCRCSource(instance *brokerv1alpha1.ClusterInstance, binding *brokerv1alpha1.CRCBootKeyStatus) *crcDataVolumeSource {
+// boundCRCSource rebuilds the DataVolume source recorded in a CRC boot key
+// binding. A nil binding is an error, not a panic: callers that reach this
+// function without a recorded binding must stop and re-verify the source
+// instead of dereferencing it.
+func boundCRCSource(instance *brokerv1alpha1.ClusterInstance, binding *brokerv1alpha1.CRCBootKeyStatus) (*crcDataVolumeSource, error) {
+	if binding == nil {
+		return nil, fmt.Errorf("CRC boot key binding is missing; cannot build the DataVolume source")
+	}
 	bundle := &brokerv1alpha1.CRCBundle{
 		Spec: brokerv1alpha1.CRCBundleSpec{StorageClassName: binding.StorageClassName},
 		Status: brokerv1alpha1.CRCBundleStatus{
@@ -35,10 +42,14 @@ func boundCRCSource(instance *brokerv1alpha1.ClusterInstance, binding *brokerv1a
 			DiskImagePVCRef:       &corev1.LocalObjectReference{Name: binding.PVCName},
 		},
 	}
-	return &crcDataVolumeSource{
-		dv:            resources.BuildCRCDataVolumeFromBundle(instance, bundle),
-		sshSecretName: resources.CRCBootKeySecretName(instance.Name), sshDataKey: crcBundleSSHKeyDataKey,
+	dv, err := resources.BuildCRCDataVolumeFromBundle(instance, bundle)
+	if err != nil {
+		return nil, err
 	}
+	return &crcDataVolumeSource{
+		dv:            dv,
+		sshSecretName: resources.CRCBootKeySecretName(instance.Name), sshDataKey: crcBundleSSHKeyDataKey,
+	}, nil
 }
 
 func bootKeyHash(data []byte) string {

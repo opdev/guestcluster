@@ -267,17 +267,23 @@ func quantityPtr(q resource.Quantity) *resource.Quantity {
 // BuildNodePool constructs the default HyperShift NodePool backing a
 // ClusterInstance's KubeVirt workers. replicas is the desired worker count
 // for topology=hcp; see ClusterInstanceReconciler.desiredReplicas.
-func BuildNodePool(instance *brokerv1alpha1.ClusterInstance, hcName, namespace string, replicas int32) *hyperv1beta1.NodePool {
+func BuildNodePool(instance *brokerv1alpha1.ClusterInstance, hcName, namespace string, replicas int32) (*hyperv1beta1.NodePool, error) {
 	tmpl := instance.Spec.Template
 
 	size := tmpl.RootVolumeSize
 	if size == "" {
 		size = defaultNodePoolRootVolumeSize
 	}
-	rootVolSize := resource.MustParse(size)
+	rootVolSize, err := parseQuantity(size, "template.rootVolumeSize")
+	if err != nil {
+		return nil, err
+	}
 
 	cores := uint32(tmpl.Cores)
-	memory := resource.MustParse(tmpl.Memory)
+	memory, err := parseQuantity(tmpl.Memory, "template.memory")
+	if err != nil {
+		return nil, err
+	}
 
 	kubevirtPlatform := &hyperv1beta1.KubevirtNodePoolPlatform{
 		RootVolume: &hyperv1beta1.KubevirtRootVolume{
@@ -319,7 +325,7 @@ func BuildNodePool(instance *brokerv1alpha1.ClusterInstance, hcName, namespace s
 			},
 			Replicas: &replicas,
 		},
-	}
+	}, nil
 }
 
 // HostedClusterAvailable reports whether hc's Available condition is True.
