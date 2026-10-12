@@ -177,9 +177,10 @@ func (r *CRCBundleReconciler) reconcilePreparing(ctx context.Context, bundle *br
 		return ctrl.Result{}, fmt.Errorf("getting bundle-prep Job %s: %w", jobName, err)
 	}
 
-	if job.Status.Failed > 0 && (job.Spec.BackoffLimit == nil || job.Status.Failed > *job.Spec.BackoffLimit) {
+	if reason, failed := bundlePrepJobFailure(job); failed {
 		bundle.Status.Phase = brokerv1alpha1.CRCBundlePhaseFailed
-		setBundleCondition(bundle, metav1.ConditionFalse, "PrepJobFailed", fmt.Sprintf("bundle-prep Job %s failed (backoffLimit exhausted)", jobName))
+		setBundleCondition(bundle, metav1.ConditionFalse, "PrepJobFailed",
+			fmt.Sprintf("bundle-prep Job %s failed (%s); delete the Job to retry preparation", jobName, reason))
 		if err := r.Status().Update(ctx, bundle); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -252,6 +253,31 @@ func (r *CRCBundleReconciler) reconcilePreparing(ctx context.Context, bundle *br
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// bundlePrepJobFailure reports whether the bundle-prep Job has failed
+// terminally, and with which reason.
+//
+// The JobFailed condition is the authoritative terminal signal. A Job that
+// reaches its ActiveDeadlineSeconds (two hours, see BuildBundlePrepJob)
+// reports JobFailed=True with Reason=DeadlineExceeded while its Failed pod
+// count often stays at or below BackoffLimit, so a Failed-count comparison
+// alone never fired for that case and the CRCBundle requeued in Preparing
+// forever. The Failed-count comparison remains only as a fallback for a Job
+// status whose condition lags behind its pod count.
+func bundlePrepJobFailure(job *batchv1.Job) (reason string, failed bool) {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			if condition.Reason != "" {
+				return condition.Reason, true
+			}
+			return "JobFailed", true
+		}
+	}
+	if job.Status.Failed > 0 && (job.Spec.BackoffLimit == nil || job.Status.Failed > *job.Spec.BackoffLimit) {
+		return batchv1.JobReasonBackoffLimitExceeded, true
+	}
+	return "", false
 }
 
 // reconcileFailed allows recovery if an operator manually deletes the failed
