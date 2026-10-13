@@ -19,6 +19,8 @@ package resources
 import (
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 func TestCRCAgentJobNameIsVMIScopedAndBounded(t *testing.T) {
@@ -34,5 +36,26 @@ func TestCRCAgentJobNameIsVMIScopedAndBounded(t *testing.T) {
 	}
 	if first != CRCAgentJobName(instanceName, "first-vmi") {
 		t.Fatalf("job name must be deterministic")
+	}
+}
+
+// TestCRCAgentJobNameStaysValidWhenTruncated covers instance names whose
+// cut point lands on a dot or a hyphen. A dot is the dangerous case: the
+// suffix would start the next DNS label with a hyphen, and the API server
+// rejects that name.
+func TestCRCAgentJobNameStaysValidWhenTruncated(t *testing.T) {
+	for _, name := range []string{
+		strings.Repeat("a", 39) + ".b", // cut ends at a dot
+		strings.Repeat("a", 39) + "-b", // cut ends at a hyphen
+		strings.Repeat("a", 63),        // longest instance name
+		strings.Repeat("a.", 21),       // dotted subdomain, cut ends at a dot
+	} {
+		jobName := CRCAgentJobName(name, "vmi-uid")
+		if len(jobName) > 63 {
+			t.Fatalf("job name %q for %q: length = %d, want at most 63", jobName, name, len(jobName))
+		}
+		if errs := validation.IsDNS1123Subdomain(jobName); len(errs) != 0 {
+			t.Errorf("job name %q for %q is not a valid DNS subdomain: %v", jobName, name, errs)
+		}
 	}
 }
