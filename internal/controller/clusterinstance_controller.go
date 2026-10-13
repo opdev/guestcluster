@@ -704,7 +704,7 @@ func terminationCondition(instance *brokerv1alpha1.ClusterInstance, cause error)
 	}
 	if !instance.DeletionTimestamp.IsZero() && time.Since(instance.DeletionTimestamp.Time) >= cleanupTimeout {
 		reason = "CleanupTimedOut"
-		message = fmt.Sprintf("Backing VMIs, virt-launcher pods, or their owners are still deleting after %s; the finalizer remains and cleanup will retry", cleanupTimeout)
+		message = fmt.Sprintf("Backing resources, including the HyperShift control-plane namespace, remain after %s; the finalizer remains and cleanup will retry", cleanupTimeout)
 	}
 	return metav1.Condition{
 		Type:               conditionTypeTerminating,

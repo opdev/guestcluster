@@ -438,7 +438,7 @@ func TestReconcileDeleteWaitsForLauncherPodMissingFromCache(t *testing.T) {
 	}
 }
 
-func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
+func TestHCPTeardownWaitsForPVCCleanupAndControlPlaneNamespace(t *testing.T) {
 	for _, deleting := range []bool{false, true} {
 		name := "waiting-for-garbage-collection"
 		if deleting {
@@ -457,11 +457,13 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 			instance.Spec.Type = brokerv1alpha1.TopologyHCP
 			instance.Spec.PoolRef = corev1.LocalObjectReference{Name: pool.Name}
 			instance.Labels = resources.PoolLabels(pool.Name)
+			hcpNamespaceName := resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace))
+			hcpNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: hcpNamespaceName}}
 			// The parents, VMIs, and launcher pods are already gone. This claim
 			// has no NodePool label and is not yet visible in the cache.
 			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 				Name:      "worker-root-disk",
-				Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName(instance.Name, instance.Namespace)),
+				Namespace: hcpNamespaceName,
 			}}
 			if deleting {
 				pvc.DeletionTimestamp = timePointer(time.Now())
@@ -470,7 +472,7 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 			otherPVC := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 				Name: pvc.Name, Namespace: resources.HostedControlPlaneNamespace(instance.Namespace, resources.HostedClusterName("other-cluster", instance.Namespace)),
 			}}
-			c := newTeardownFakeClient(t, pool, instance, pvc, otherPVC, enabledTestNamespace(pool.Namespace))
+			c := newTeardownFakeClient(t, pool, instance, hcpNamespace, pvc, otherPVC, enabledTestNamespace(pool.Namespace))
 			c.hidePVCsFromList = true
 			for range 2 {
 				// New reconcilers use only persisted state after a restart.
@@ -516,14 +518,36 @@ func TestHCPPVCCleanupHoldsPoolCapacity(t *testing.T) {
 				t.Fatalf("removing PVC: %v", err)
 			}
 			r := &ClusterInstanceReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
-			if _, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance))); err != nil {
-				t.Fatalf("final instance Reconcile: %v", err)
+			result, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance)))
+			if err != nil {
+				t.Fatalf("instance Reconcile with control-plane namespace present: %v", err)
 			}
-			assertInstanceMissing(t, ctx, c, instance)
+			if result.RequeueAfter != requeueInterval {
+				t.Fatalf("RequeueAfter while control-plane namespace exists = %s, want %s", result.RequeueAfter, requeueInterval)
+			}
+			assertInstanceFinalizer(t, ctx, c, instance)
 			assertObjectExists(t, ctx, c, otherPVC)
 			poolReconciler := &ClusterPoolReconciler{Client: c, APIReader: c.Client, Scheme: c.Scheme()}
 			if _, err := poolReconciler.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(pool))); err != nil {
-				t.Fatalf("pool Reconcile after cleanup: %v", err)
+				t.Fatalf("pool Reconcile while control-plane namespace exists: %v", err)
+			}
+			instances := &brokerv1alpha1.ClusterInstanceList{}
+			if err := c.List(ctx, instances, client.InNamespace(pool.Namespace), client.MatchingLabels(resources.PoolLabels(pool.Name))); err != nil {
+				t.Fatalf("listing instances while control-plane namespace exists: %v", err)
+			}
+			if len(instances.Items) != 1 || instances.Items[0].Name != instance.Name {
+				t.Fatal("pool created a replacement while the old HCP control-plane namespace still exists")
+			}
+
+			if err := c.Client.Delete(ctx, hcpNamespace); err != nil {
+				t.Fatalf("removing control-plane namespace: %v", err)
+			}
+			if _, err := r.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(instance))); err != nil {
+				t.Fatalf("final instance Reconcile after namespace deletion: %v", err)
+			}
+			assertInstanceMissing(t, ctx, c, instance)
+			if _, err := poolReconciler.Reconcile(ctx, ctrlRequest(client.ObjectKeyFromObject(pool))); err != nil {
+				t.Fatalf("pool Reconcile after namespace deletion: %v", err)
 			}
 			replacement := &brokerv1alpha1.ClusterInstance{}
 			if err := c.Get(ctx, client.ObjectKey{Namespace: pool.Namespace, Name: pool.Name + "-0"}, replacement); err != nil {
