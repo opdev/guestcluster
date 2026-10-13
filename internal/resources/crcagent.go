@@ -17,10 +17,7 @@ limitations under the License.
 package resources
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
-	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -62,17 +59,11 @@ func CRCAgentBindingName(instanceName string) string {
 	return crcAgentResourceName(instanceName, "-crc-agent-binding-")
 }
 
+// crcAgentResourceName derives the name of an instance-scoped RBAC object
+// from the instance name and a kind suffix. The hash of the instance name
+// distinguishes names that share a truncated prefix.
 func crcAgentResourceName(instanceName, suffix string) string {
-	hash := sha256.Sum256([]byte(instanceName))
-	digest := hex.EncodeToString(hash[:])[:12]
-	prefix := instanceName
-	if len(prefix) > 63-len(suffix)-len(digest) {
-		prefix = prefix[:63-len(suffix)-len(digest)]
-	}
-	// A truncated DNS subdomain can end at a dot. The appended hyphen
-	// would then start the next DNS label, which the API rejects.
-	prefix = strings.TrimRight(prefix, "-.")
-	return prefix + suffix + digest
+	return hashSuffixedName(instanceName, suffix, instanceName)
 }
 
 const (
