@@ -12,7 +12,7 @@ require (
 	k8s.io/client-go v0.37.1
 	kubevirt.io/api v1.9.0
 	kubevirt.io/containerized-data-importer-api v1.66.1
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 )
 
 require github.com/openshift/api v0.0.0-20260805160557-b61243060d5f
