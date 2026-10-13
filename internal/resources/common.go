@@ -141,9 +141,8 @@ func DataVolumeName(instanceName string) string {
 // If the namespace leaves no room for the hash, the placement check rejects it.
 func HostedClusterName(instanceName, instanceNamespace string) string {
 	const hashLength = 16
-	hash := sha256.Sum256([]byte(instanceNamespace + "\x00" + instanceName))
-	digest := hex.EncodeToString(hash[:])[:hashLength]
-	prefixLimit := 63 - len(instanceNamespace) - 1 - len("gc--") - hashLength
+	digest := hashHex(instanceNamespace+"\x00"+instanceName, hashLength)
+	prefixLimit := dns1123LabelMaxLength - len(instanceNamespace) - 1 - len("gc--") - hashLength
 	if prefixLimit <= 0 {
 		return "gc-" + digest
 	}
@@ -234,18 +233,11 @@ func LeaseKubeconfigSecretName(leaseName string) string {
 // This is a run-to-completion Job, not a long-running Deployment. The
 // crc-agent's work is a one-shot task per VM boot: SSH into the freshly
 // booted CRC VM, run the native post-boot fixups, and publish
-// RawKubeconfigSecretName. The VMI hash keeps the name within the Kubernetes
-// DNS label limit when an instance name is at its maximum length.
+// RawKubeconfigSecretName. The hash of the VMI UID gives each VMI its own
+// Job and keeps the name within the DNS label limit when an instance name
+// is at its maximum length.
 func CRCAgentJobName(instanceName, vmiUID string) string {
-	const suffix = "-crc-agent-"
-	const hashLength = 12
-	hash := sha256.Sum256([]byte(vmiUID))
-	uidHash := hex.EncodeToString(hash[:])[:hashLength]
-	maxPrefixLength := 63 - len(suffix) - hashLength
-	if len(instanceName) > maxPrefixLength {
-		instanceName = instanceName[:maxPrefixLength]
-	}
-	return instanceName + suffix + uidHash
+	return hashSuffixedName(instanceName, "-crc-agent-", vmiUID)
 }
 
 // CRCAPIServiceName is the deterministic name of the ClusterIP Service that
@@ -268,7 +260,38 @@ const (
 	apiHostnameHashLength     = 16 // 64 bits of the SHA-256 identity hash.
 	dns1123LabelMaxLength     = 63
 	dns1123SubdomainMaxLength = 253
+	nameHashLength            = 12 // 48 bits of the SHA-256 digest in hash-suffixed names.
 )
+
+// hashHex returns the first length hexadecimal characters of the SHA-256
+// digest of input. Name builders use it to derive short identity
+// fragments for object names. length must not be more than 64, the
+// number of hexadecimal characters in a SHA-256 digest.
+func hashHex(input string, length int) string {
+	hash := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(hash[:])[:length]
+}
+
+// hashSuffixedName builds a deterministic object name of the form
+// "prefix + suffix + hash" that stays within the DNS label limit of 63
+// characters. The hash holds the first nameHashLength hexadecimal
+// characters of the SHA-256 digest of hashInput. The sum of len(suffix)
+// and nameHashLength must stay below 63. This leaves room for at least
+// one prefix character.
+//
+// A prefix that is too long is cut. A cut DNS subdomain can end at a
+// dot. The suffix starts with a hyphen, and a DNS label must not start
+// with a hyphen. The API server rejects such a name. hashSuffixedName
+// therefore removes trailing dots and hyphens after the cut.
+func hashSuffixedName(prefix, suffix, hashInput string) string {
+	digest := hashHex(hashInput, nameHashLength)
+	maxPrefixLength := dns1123LabelMaxLength - len(suffix) - nameHashLength
+	if len(prefix) > maxPrefixLength {
+		prefix = prefix[:maxPrefixLength]
+	}
+	prefix = strings.TrimRight(prefix, "-.")
+	return prefix + suffix + digest
+}
 
 // APIHostname returns the stable, externally-routable hostname for a
 // ClusterInstance. Its identity hash includes both namespace and instance
@@ -305,8 +328,7 @@ func APIHostname(instanceName, instanceNamespace, mgmtIngressDomain string) (str
 		return "", fmt.Errorf("management ingress domain %q leaves no room for a unique API hostname", mgmtIngressDomain)
 	}
 
-	identityHash := sha256.Sum256([]byte(instanceNamespace + "\x00" + instanceName))
-	hash := hex.EncodeToString(identityHash[:])[:apiHostnameHashLength]
+	hash := hashHex(instanceNamespace+"\x00"+instanceName, apiHostnameHashLength)
 	namePrefix := dnsSafeHostnameLabel(instanceName)
 	nameLimit := labelLimit - labelFixedLength
 	if len(namePrefix) > nameLimit {
