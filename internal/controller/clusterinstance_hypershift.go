@@ -727,5 +727,18 @@ func (r *ClusterInstanceReconciler) teardownHyperShiftBacking(ctx context.Contex
 		logf.FromContext(ctx).Info("waiting for HyperShift PVCs to be deleted", "namespace", hcpNamespace, "count", len(pvcs.Items))
 		return true, nil
 	}
+
+	// The pool may reuse this ClusterInstance's deterministic name as soon as
+	// its finalizer is removed. Keep the finalizer until HyperShift has removed
+	// the control-plane namespace too, so a replacement cannot collide with a
+	// namespace that is still terminating or otherwise has not been deleted.
+	controlPlaneNamespace := &corev1.Namespace{}
+	if err := r.platformReader().Get(ctx, client.ObjectKey{Name: hcpNamespace}, controlPlaneNamespace); err == nil {
+		logf.FromContext(ctx).Info("waiting for HyperShift control-plane namespace to be deleted", "namespace", hcpNamespace)
+		return true, nil
+	} else if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("checking HyperShift control-plane namespace %s for teardown: %w", hcpNamespace, err)
+	}
+
 	return pending, nil
 }
