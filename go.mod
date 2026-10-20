@@ -3,7 +3,7 @@ module github.com/opdev/guestcluster
 go 1.26.0
 
 require (
-	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	github.com/openshift/hypershift/api v0.0.0-20260817182709-8115aaf37105
 	golang.org/x/crypto v0.58.0
