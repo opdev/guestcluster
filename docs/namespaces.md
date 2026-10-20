@@ -42,6 +42,35 @@ Only the exact string `"true"` enables new provisioning. Missing labels, `false`
 and other values disable it. There is no operator-namespace exception. This
 policy applies to CRC and HCP pools and standalone instances.
 
+## Set a namespace ClusterInstance limit
+
+Create a Kubernetes `ResourceQuota` to cap all `ClusterInstance` objects in a
+source namespace:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: clusterinstance-limit
+  namespace: guestcluster-demo
+spec:
+  hard:
+    count/clusterinstances.guestcluster.opdev.io: "10"
+```
+
+The limit applies across every `ClusterPool`, topology, template, and standalone
+`ClusterInstance` in the namespace. Failed and terminating objects count until
+the API removes them. When more than one quota sets this count, the lowest limit
+applies. Without this quota, the namespace has no ClusterInstance limit.
+
+The pool controller checks the live namespace count before it creates an
+instance. Kubernetes also enforces the quota when any client creates an
+instance. This protects the limit when another client creates an instance at
+the same time. When the limit blocks a pool, `CapacityAvailable=False` with
+reason `NamespaceAtCapacity` reports the current count. Instance and quota
+changes wake pools in the namespace. The limit does not delete existing
+instances if an administrator lowers it below current use.
+
 Create input Secrets in the source namespace. `template.pullSecretRef` selects
 a local Secret; the default is `pull-secret`. Manual CRC inputs use
 `template.bundleSSHKeyRef`. Optional HCP worker SSH inputs use

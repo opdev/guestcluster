@@ -82,25 +82,17 @@ func (r *ClusterInstanceReconciler) gateNamespaceProvisioning(ctx context.Contex
 	return &ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, instance, previous, "recording namespace provisioning block")
 }
 func namespaceRequests(ctx context.Context, c client.Client, obj client.Object, pools bool) []reconcile.Request {
-	var requests []reconcile.Request
 	if pools {
-		list := &brokerv1alpha1.ClusterPoolList{}
-		if err := c.List(ctx, list, client.InNamespace(obj.GetName())); err != nil {
-			logf.FromContext(ctx).Error(err, "listing pools for namespace policy")
-			return nil
-		}
-		for i := range list.Items {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
-		}
-	} else {
-		list := &brokerv1alpha1.ClusterInstanceList{}
-		if err := c.List(ctx, list, client.InNamespace(obj.GetName())); err != nil {
-			logf.FromContext(ctx).Error(err, "listing instances for namespace policy")
-			return nil
-		}
-		for i := range list.Items {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
-		}
+		return poolRequestsForNamespace(ctx, c, obj.GetName())
+	}
+	list := &brokerv1alpha1.ClusterInstanceList{}
+	if err := c.List(ctx, list, client.InNamespace(obj.GetName())); err != nil {
+		logf.FromContext(ctx).Error(err, "listing instances for namespace policy")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 	}
 	return requests
 }

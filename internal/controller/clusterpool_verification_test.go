@@ -51,6 +51,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -211,6 +212,64 @@ func registerClusterPoolVerificationSpecs(topology brokerv1alpha1.ClusterTopolog
 
 			reconcilePool(pool)
 			Expect(listPoolInstances(pool.Name)).To(HaveLen(1))
+		})
+
+		It("applies the namespace limit across pools and topologies, and uses released capacity", func() {
+			capacityNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name:   suffixed("namespace-capacity"),
+				Labels: map[string]string{namespaceEnabledLabel: namespaceEnabledValue},
+			}}
+			Expect(k8sClient.Create(ctx, capacityNamespace)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterLease{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterInstance{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterPool{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &corev1.ResourceQuota{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.Delete(ctx, capacityNamespace)
+			})
+			poolInstances := func(poolName string) []brokerv1alpha1.ClusterInstance {
+				list := &brokerv1alpha1.ClusterInstanceList{}
+				Expect(k8sClient.List(ctx, list, client.InNamespace(capacityNamespace.Name), client.MatchingLabels(resources.PoolLabels(poolName)))).To(Succeed())
+				return list.Items
+			}
+
+			quota := &corev1.ResourceQuota{
+				ObjectMeta: metav1.ObjectMeta{Name: suffixed("clusterinstance-limit"), Namespace: capacityNamespace.Name},
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					corev1.ResourceName(clusterInstanceCountQuota): resource.MustParse("2"),
+				}},
+			}
+			Expect(k8sClient.Create(ctx, quota)).To(Succeed())
+
+			firstPool := newVerifyPool("pool-namespace-capacity-first", 3, 1, 0)
+			firstPool.Namespace = capacityNamespace.Name
+			Expect(k8sClient.Create(ctx, firstPool)).To(Succeed())
+			reconcilePool(firstPool)
+
+			otherTopology := brokerv1alpha1.TopologyCRC
+			if topology == brokerv1alpha1.TopologyCRC {
+				otherTopology = brokerv1alpha1.TopologyHCP
+			}
+			secondPool := newVerifyPool("pool-namespace-capacity-second", 3, 2, 0)
+			secondPool.Namespace = capacityNamespace.Name
+			secondPool.Spec.Type = otherTopology
+			secondPool.Spec.Template = verificationTemplateFor(otherTopology)
+			Expect(k8sClient.Create(ctx, secondPool)).To(Succeed())
+			reconcilePool(secondPool)
+			reconcilePool(secondPool)
+
+			Expect(poolInstances(firstPool.Name)).To(HaveLen(1))
+			Expect(poolInstances(secondPool.Name)).To(HaveLen(1))
+			currentSecondPool := &brokerv1alpha1.ClusterPool{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(secondPool), currentSecondPool)).To(Succeed())
+			cond := capacityCondition(currentSecondPool)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("NamespaceAtCapacity"))
+
+			Expect(k8sClient.Delete(ctx, poolInstances(firstPool.Name)[0].DeepCopy())).To(Succeed())
+			reconcilePool(secondPool)
+			Expect(poolInstances(secondPool.Name)).To(HaveLen(2), "the second pool should use capacity after the first pool's instance is deleted")
 		})
 
 		It("reports AtCapacity when saturated with unmet demand, and CapacitySufficient once demand is relieved", func() {
