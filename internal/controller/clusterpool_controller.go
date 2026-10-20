@@ -30,10 +30,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
@@ -57,6 +59,10 @@ import (
 //     makes MinSize=0, WarmSpares=0 a valid pure-on-demand configuration
 //     instead of a deadlock, since ClusterLeaseReconciler never provisions.
 //
+// A namespace ResourceQuota can limit the total ClusterInstance count across
+// all pools in that namespace. The API server also enforces this quota for
+// every client that creates an instance.
+//
 // ClusterPoolReconciler always determines "claimed" from
 // ClusterLease.Status.InstanceRef, the single source of truth for the
 // lease-instance binding (see clusterlease_types.go and
@@ -73,7 +79,8 @@ type ClusterPoolReconciler struct {
 
 	// APIReader is an uncached client (see manager.Manager.GetAPIReader) that
 	// this reconciler's capacity accounting uses specifically for the
-	// ClusterInstance/ClusterLease List() calls it depends on. The regular
+	// ClusterInstance, ClusterLease, and ResourceQuota List() calls it depends
+	// on. The regular
 	// (cached) client.Client above is backed by an informer whose local
 	// store only reflects a given write once its own watch round-trip
 	// completes, asynchronously relative to the write itself. An unrelated
@@ -84,16 +91,15 @@ type ClusterPoolReconciler struct {
 	// earlier, and Reconcile would double-act on the same floor deficit.
 	// Testing verified this empirically: a single warmSpares increase from
 	// 1 to 2 produced two new ClusterInstances instead of one. Reading
-	// these two lists live from the API server closes that race outright.
+	// these lists live from the API server closes that race outright.
 	// ClusterPool reconciles are infrequent enough that the extra apiserver
 	// round-trip cost is immaterial.
 	APIReader client.Reader
 }
 
 const (
-	// conditionTypeCapacityAvailable summarizes whether a ClusterPool's
-	// MinSize/WarmSpares floors are reachable given MaxSize, and whether
-	// current demand can be satisfied within MaxSize right now.
+	// conditionTypeCapacityAvailable summarizes whether pool demand can be
+	// satisfied within MaxSize and the namespace ClusterInstance limit.
 	conditionTypeCapacityAvailable = "CapacityAvailable"
 
 	// scaleDownStabilityPeriod mirrors cluster-autoscaler's
@@ -113,6 +119,7 @@ const (
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=crcbundles,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch
 
 // Reconcile drives ClusterPool.Status to reflect the current supply of
 // ClusterInstances. It tops up MinSize, WarmSpares, and pending demand
@@ -155,13 +162,31 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	clusterInstanceReservation.Lock()
 	defer clusterInstanceReservation.Unlock()
 
-	instanceList := &brokerv1alpha1.ClusterInstanceList{}
-	if err := reader.List(ctx, instanceList,
-		client.InNamespace(pool.Namespace),
-		client.MatchingLabels(resources.PoolLabels(pool.Name)),
-	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("listing ClusterInstances for pool: %w", err)
+	allInstances := &brokerv1alpha1.ClusterInstanceList{}
+	if err := reader.List(ctx, allInstances, client.InNamespace(pool.Namespace)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing ClusterInstances in namespace: %w", err)
 	}
+	instanceList := &brokerv1alpha1.ClusterInstanceList{}
+	poolLabels := resources.PoolLabels(pool.Name)
+	for i := range allInstances.Items {
+		inst := &allInstances.Items[i]
+		matchesPool := true
+		for key, value := range poolLabels {
+			if inst.Labels[key] != value {
+				matchesPool = false
+				break
+			}
+		}
+		if matchesPool {
+			instanceList.Items = append(instanceList.Items, *inst)
+		}
+	}
+	quotaList := &corev1.ResourceQuotaList{}
+	if err := reader.List(ctx, quotaList, client.InNamespace(pool.Namespace)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing ResourceQuotas in namespace: %w", err)
+	}
+	namespaceCapacity := namespaceInstanceCapacity{total: int64(len(allInstances.Items))}
+	namespaceCapacity.limit, namespaceCapacity.limited = namespaceClusterInstanceLimit(quotaList)
 
 	// claimed and pendingDemand come from every ClusterLease in the
 	// namespace; see computeLeaseAccounting's doc for the accounting rules.
@@ -218,7 +243,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// branches below return early, so whichever Status().Update fires
 	// carries it. See capacityCondition's doc for the three cases it
 	// distinguishes.
-	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand))
+	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand, namespaceCapacity))
 	if !policy.enabled {
 		// Keep capacity observations current without replacing or trimming
 		// existing clusters as a side effect of namespace opt-out.
@@ -226,9 +251,23 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if need > 0 && room > 0 {
+		if namespaceCapacity.atLimit() {
+			log.Info("namespace ClusterInstance limit blocks pool capacity",
+				"pool", pool.Name, "namespace", pool.Namespace,
+				"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+			return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
+		}
 		log.Info("creating ClusterInstance to satisfy pool capacity",
-			"pool", pool.Name, "total", total, "available", available, "pending", pending, "need", need, "room", room)
+			"pool", pool.Name, "total", total, "available", available, "pending", pending, "need", need, "room", room,
+			"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
 		if err := r.createInstance(ctx, pool, instanceList); err != nil {
+			if isClusterInstanceQuotaExceeded(err) {
+				log.Info("ResourceQuota rejected ClusterInstance creation",
+					"pool", pool.Name, "namespace", pool.Namespace,
+					"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+				apimeta.SetStatusCondition(&pool.Status.Conditions, namespaceLimitCondition(pool.Generation, namespaceInstanceCapacity{}))
+				return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
+			}
 			return ctrl.Result{}, fmt.Errorf("creating ClusterInstance for pool %s: %w", pool.Name, err)
 		}
 		// Reconcile does NOT requeue immediately here, because r.List()
@@ -376,10 +415,9 @@ func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList,
 	return total, available, leasedCount, pending, terminating, availableInstances
 }
 
-// capacityCondition summarizes, for external consumers, whether the pool's
-// MinSize/WarmSpares floors are reachable given MaxSize, and whether
-// current demand can be satisfied within it.
-func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32) metav1.Condition {
+// capacityCondition summarizes whether this pool can meet its floors and
+// demand within MaxSize and the namespace ClusterInstance limit.
+func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32, namespaceCapacity namespaceInstanceCapacity) metav1.Condition {
 	switch {
 	case pool.Spec.MaxSize < pool.Spec.MinSize || pool.Spec.MaxSize < pool.Spec.WarmSpares:
 		// Structurally unreachable: MaxSize cannot accommodate the
@@ -396,6 +434,8 @@ func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDema
 				pool.Spec.MaxSize, pool.Spec.MinSize, pool.Spec.WarmSpares),
 			ObservedGeneration: pool.Generation,
 		}
+	case need > 0 && namespaceCapacity.atLimit():
+		return namespaceLimitCondition(pool.Generation, namespaceCapacity)
 	case need > 0 && room <= 0:
 		// Floors are reachable in principle, but the pool is currently
 		// saturated at MaxSize with a real unmet deficit or demand, for
@@ -681,8 +721,14 @@ func (r *ClusterPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&brokerv1alpha1.ClusterPool{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			return namespaceRequests(ctx, r.Client, obj, true)
+			return poolRequestsForNamespace(ctx, r.Client, obj.GetName())
 		})).
+		Watches(&corev1.ResourceQuota{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			return poolRequestsForNamespace(ctx, r.Client, obj.GetNamespace())
+		}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&brokerv1alpha1.ClusterInstance{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			return poolRequestsForNamespace(ctx, r.Client, obj.GetNamespace())
+		}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&brokerv1alpha1.ClusterInstance{}).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.poolForLease)).
 		Named("clusterpool").
