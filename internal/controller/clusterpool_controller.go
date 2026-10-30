@@ -72,7 +72,8 @@ import (
 // mutates a lease itself; that responsibility belongs entirely to
 // ClusterLeaseReconciler. It also reports a CapacityAvailable status
 // condition that summarizes whether the floors are structurally reachable
-// given MaxSize, and whether the pool is currently saturated.
+// given MaxSize and namespace quotas, and whether the pool is currently
+// saturated.
 type ClusterPoolReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -231,6 +232,27 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		need = demandNeed
 	}
 	room := pool.Spec.MaxSize - total
+	var resourceQuotaViolation *namespaceResourceQuotaViolation
+	if need > 0 && room > 0 && !namespaceCapacity.atLimit() {
+		limits, err := namespaceClusterInstanceResourceLimits(quotaList)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading namespace Guestcluster resource limits: %w", err)
+		}
+		if len(limits) > 0 {
+			candidate := &brokerv1alpha1.ClusterInstance{
+				ObjectMeta: metav1.ObjectMeta{Namespace: pool.Namespace},
+				Spec: brokerv1alpha1.ClusterInstanceSpec{
+					Type:     pool.Spec.Type,
+					PoolRef:  corev1.LocalObjectReference{Name: pool.Name},
+					Template: pool.Spec.Template,
+				},
+			}
+			resourceQuotaViolation, err = namespaceClusterInstanceResourceViolation(allInstances.Items, limits, candidate)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("calculating namespace Guestcluster resource usage: %w", err)
+			}
+		}
+	}
 
 	log.V(1).Info("evaluated pool capacity",
 		"pool", pool.Name, "total", total, "available", available, "pending", pending, "terminating", terminating, "leasedCount", leasedCount,
@@ -243,7 +265,7 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// branches below return early, so whichever Status().Update fires
 	// carries it. See capacityCondition's doc for the three cases it
 	// distinguishes.
-	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand, namespaceCapacity))
+	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand, namespaceCapacity, resourceQuotaViolation))
 	if !policy.enabled {
 		// Keep capacity observations current without replacing or trimming
 		// existing clusters as a side effect of namespace opt-out.
@@ -255,6 +277,11 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Info("namespace ClusterInstance limit blocks pool capacity",
 				"pool", pool.Name, "namespace", pool.Namespace,
 				"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+			return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
+		}
+		if resourceQuotaViolation != nil {
+			log.Info("namespace Guestcluster resource quota blocks pool capacity",
+				"pool", pool.Name, "namespace", pool.Namespace, "reason", resourceQuotaViolation.message())
 			return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
 		}
 		log.Info("creating ClusterInstance to satisfy pool capacity",
@@ -417,7 +444,7 @@ func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList,
 
 // capacityCondition summarizes whether this pool can meet its floors and
 // demand within MaxSize and the namespace ClusterInstance limit.
-func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32, namespaceCapacity namespaceInstanceCapacity) metav1.Condition {
+func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32, namespaceCapacity namespaceInstanceCapacity, resourceQuotaViolation *namespaceResourceQuotaViolation) metav1.Condition {
 	switch {
 	case pool.Spec.MaxSize < pool.Spec.MinSize || pool.Spec.MaxSize < pool.Spec.WarmSpares:
 		// Structurally unreachable: MaxSize cannot accommodate the
@@ -451,6 +478,8 @@ func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDema
 				pool.Spec.MaxSize, need, pendingDemand),
 			ObservedGeneration: pool.Generation,
 		}
+	case need > 0 && resourceQuotaViolation != nil:
+		return namespaceResourceQuotaCondition(pool.Generation, resourceQuotaViolation)
 	default:
 		return metav1.Condition{
 			Type:               conditionTypeCapacityAvailable,

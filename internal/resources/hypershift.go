@@ -33,9 +33,9 @@ import (
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 )
 
-// defaultNodePoolRootVolumeSize mirrors the upstream `hcp create cluster`
+// DefaultNodePoolRootVolumeSize mirrors the upstream `hcp create cluster`
 // default when ClusterTemplate.RootVolumeSize is unset.
-const defaultNodePoolRootVolumeSize = "32Gi"
+const DefaultNodePoolRootVolumeSize = "32Gi"
 
 // BuildHostedCluster constructs a minimal-but-real HyperShift HostedCluster
 // for the KubeVirt platform, mirroring the field set that `hcp create
@@ -272,7 +272,7 @@ func BuildNodePool(instance *brokerv1alpha1.ClusterInstance, hcName, namespace s
 
 	size := tmpl.RootVolumeSize
 	if size == "" {
-		size = defaultNodePoolRootVolumeSize
+		size = DefaultNodePoolRootVolumeSize
 	}
 	rootVolSize, err := parseQuantity(size, "template.rootVolumeSize")
 	if err != nil {
