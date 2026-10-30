@@ -30,10 +30,10 @@ import (
 	brokerv1alpha1 "github.com/opdev/guestcluster/api/v1alpha1"
 )
 
-// The DataVolume builders fall back to defaultCRCRootVolumeSize when
+// The DataVolume builders fall back to DefaultCRCRootVolumeSize when
 // ClusterTemplate.RootVolumeSize is unset. CRC bundles need headroom for
 // the SNO control plane, etcd, and workloads.
-const defaultCRCRootVolumeSize = "80Gi"
+const DefaultCRCRootVolumeSize = "80Gi"
 
 // crcStorageSpec builds the StorageSpec shared by both CRC DataVolume
 // builders. It applies the default root volume size when the template does
@@ -43,7 +43,7 @@ const defaultCRCRootVolumeSize = "80Gi"
 func crcStorageSpec(tmpl brokerv1alpha1.ClusterTemplate, fallbackStorageClass string) (*cdiv1beta1.StorageSpec, error) {
 	size := tmpl.RootVolumeSize
 	if size == "" {
-		size = defaultCRCRootVolumeSize
+		size = DefaultCRCRootVolumeSize
 	}
 	storageQuantity, err := parseQuantity(size, "template.rootVolumeSize")
 	if err != nil {
