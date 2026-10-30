@@ -113,7 +113,7 @@ metadata:
         }
       ]
     capabilities: Basic Install
-    createdAt: "2026-10-12T19:10:19Z"
+    createdAt: "2026-10-30T19:38:35Z"
     operators.operatorframework.io/builder: operator-sdk-v1.42.3
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
   name: guestcluster-operator.v0.0.1
@@ -171,6 +171,7 @@ spec:
           resources:
           - configmaps
           - nodes
+          - resourcequotas
           verbs:
           - get
           - list
@@ -187,14 +188,6 @@ spec:
           - namespaces
           verbs:
           - create
-          - get
-          - list
-          - watch
-        - apiGroups:
-          - ""
-          resources:
-          - resourcequotas
-          verbs:
           - get
           - list
           - watch
@@ -446,7 +439,7 @@ spec:
                   value: guestcluster-operator-bundle-prep
                 - name: CRC_AGENT_CLUSTER_ROLE
                   value: guestcluster-operator-crc-agent-instance-role
-                image: opdev.io/guestcluster-operator:latest
+                image: controller:latest
                 livenessProbe:
                   httpGet:
                     path: /healthz

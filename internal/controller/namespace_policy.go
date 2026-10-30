@@ -57,8 +57,15 @@ func (p namespacePolicy) condition(generation int64) metav1.Condition {
 // finalizers first. Namespace termination also stops authorized provisioning:
 // Kubernetes cannot create local resources in a terminating namespace.
 func (r *ClusterInstanceReconciler) gateNamespaceProvisioning(ctx context.Context, instance *brokerv1alpha1.ClusterInstance) (*ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues(
+		"namespace", instance.Namespace,
+		"clusterInstance", instance.Name,
+		"topology", instance.Spec.Type,
+		"pool", instance.Spec.PoolRef.Name,
+	)
 	policy, err := readNamespacePolicy(ctx, r.platformReader(), instance.Namespace)
 	if err != nil {
+		log.Error(err, "failed to read namespace provisioning policy")
 		return nil, err
 	}
 	previous := instance.Status.DeepCopy()
@@ -70,6 +77,32 @@ func (r *ClusterInstanceReconciler) gateNamespaceProvisioning(ctx context.Contex
 		return nil, nil
 	}
 	if policy.enabled {
+		clusterInstanceReservation.Lock()
+		defer clusterInstanceReservation.Unlock()
+
+		violation, err := r.readNamespaceResourceQuotaViolation(ctx, instance)
+		if err != nil {
+			log.Error(err, "failed to evaluate namespace Guestcluster resource quota")
+			return nil, fmt.Errorf("checking namespace Guestcluster resource quota: %w", err)
+		}
+		if violation != nil {
+			log.Info("namespace resource quota blocks ClusterInstance provisioning",
+				"resource", violation.dimension.label,
+				"quotaKey", violation.dimension.quotaKey,
+				"allocated", violation.used.String(),
+				"requested", violation.requested.String(),
+				"limit", violation.limit.String())
+			apimeta.SetStatusCondition(&instance.Status.Conditions, policy.condition(instance.Generation))
+			instance.Status.Phase = brokerv1alpha1.PhaseProvisioning
+			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             namespaceResourceQuotaReason,
+				Message:            violation.message(),
+				ObservedGeneration: instance.Generation,
+			})
+			return &ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, instance, previous, "recording namespace resource quota block")
+		}
 		instance.Status.Provisioning = &brokerv1alpha1.ProvisioningAuthorization{StartedAt: metav1.Now()}
 		policy = namespacePolicy{enabled: true, reason: "ProvisioningAuthorized", message: "Provisioning authorization is recorded; namespace opt-out does not revoke existing work"}
 		apimeta.SetStatusCondition(&instance.Status.Conditions, policy.condition(instance.Generation))
@@ -85,8 +118,12 @@ func namespaceRequests(ctx context.Context, c client.Client, obj client.Object, 
 	if pools {
 		return poolRequestsForNamespace(ctx, c, obj.GetName())
 	}
+	return instanceRequestsForNamespace(ctx, c, obj.GetName())
+}
+
+func instanceRequestsForNamespace(ctx context.Context, c client.Client, namespace string) []reconcile.Request {
 	list := &brokerv1alpha1.ClusterInstanceList{}
-	if err := c.List(ctx, list, client.InNamespace(obj.GetName())); err != nil {
+	if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
 		logf.FromContext(ctx).Error(err, "listing instances for namespace policy")
 		return nil
 	}
@@ -95,4 +132,11 @@ func namespaceRequests(ctx context.Context, c client.Client, obj client.Object, 
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 	}
 	return requests
+}
+
+func (r *ClusterInstanceReconciler) resourceQuotaRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	if _, ok := obj.(*corev1.ResourceQuota); !ok {
+		return nil
+	}
+	return instanceRequestsForNamespace(ctx, r.Client, obj.GetNamespace())
 }

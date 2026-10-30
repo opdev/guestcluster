@@ -272,6 +272,76 @@ func registerClusterPoolVerificationSpecs(topology brokerv1alpha1.ClusterTopolog
 			Expect(poolInstances(secondPool.Name)).To(HaveLen(2), "the second pool should use capacity after the first pool's instance is deleted")
 		})
 
+		It("blocks and resumes pool provisioning at the namespace Guestcluster resource limit", func() {
+			capacityNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name:   suffixed("namespace-resource-capacity"),
+				Labels: map[string]string{namespaceEnabledLabel: namespaceEnabledValue},
+			}}
+			Expect(k8sClient.Create(ctx, capacityNamespace)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterLease{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterInstance{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &brokerv1alpha1.ClusterPool{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.DeleteAllOf(ctx, &corev1.ResourceQuota{}, client.InNamespace(capacityNamespace.Name))
+				_ = k8sClient.Delete(ctx, capacityNamespace)
+			})
+
+			cpuKey := corev1.ResourceName(clusterInstanceCPUQuota)
+			primaryQuota := &corev1.ResourceQuota{
+				ObjectMeta: metav1.ObjectMeta{Name: suffixed("resource-budget-primary"), Namespace: capacityNamespace.Name},
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					cpuKey: resource.MustParse("10"),
+				}},
+			}
+			stricterQuota := &corev1.ResourceQuota{
+				ObjectMeta: metav1.ObjectMeta{Name: suffixed("resource-budget-strict"), Namespace: capacityNamespace.Name},
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					cpuKey: resource.MustParse("5"),
+					corev1.ResourceName(clusterInstanceMemoryQuota):  resource.MustParse("1Ti"),
+					corev1.ResourceName(clusterInstanceStorageQuota): resource.MustParse("2Ti"),
+				}},
+			}
+			Expect(k8sClient.Create(ctx, primaryQuota)).To(Succeed())
+			Expect(k8sClient.Create(ctx, stricterQuota)).To(Succeed())
+
+			firstPool := newVerifyPool("pool-resource-capacity-first", 3, 1, 0)
+			firstPool.Namespace = capacityNamespace.Name
+			Expect(k8sClient.Create(ctx, firstPool)).To(Succeed())
+			reconcilePool(firstPool)
+
+			otherTopology := brokerv1alpha1.TopologyCRC
+			if topology == brokerv1alpha1.TopologyCRC {
+				otherTopology = brokerv1alpha1.TopologyHCP
+			}
+			secondPool := newVerifyPool("pool-resource-capacity-second", 3, 1, 0)
+			secondPool.Namespace = capacityNamespace.Name
+			secondPool.Spec.Type = otherTopology
+			secondPool.Spec.Template = verificationTemplateFor(otherTopology)
+			Expect(k8sClient.Create(ctx, secondPool)).To(Succeed())
+
+			listScopedPoolInstances := func(poolName string) []brokerv1alpha1.ClusterInstance {
+				list := &brokerv1alpha1.ClusterInstanceList{}
+				Expect(k8sClient.List(ctx, list, client.InNamespace(capacityNamespace.Name), client.MatchingLabels(resources.PoolLabels(poolName)))).To(Succeed())
+				return list.Items
+			}
+			reconcilePool(secondPool)
+			Expect(listScopedPoolInstances(firstPool.Name)).To(HaveLen(1))
+			Expect(listScopedPoolInstances(secondPool.Name)).To(BeEmpty())
+			currentSecondPool := &brokerv1alpha1.ClusterPool{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(secondPool), currentSecondPool)).To(Succeed())
+			condition := capacityCondition(currentSecondPool)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(namespaceResourceQuotaReason))
+
+			currentStrictQuota := &corev1.ResourceQuota{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(stricterQuota), currentStrictQuota)).To(Succeed())
+			currentStrictQuota.Spec.Hard[cpuKey] = resource.MustParse("6")
+			Expect(k8sClient.Update(ctx, currentStrictQuota)).To(Succeed())
+			reconcilePool(secondPool)
+			Expect(listScopedPoolInstances(secondPool.Name)).To(HaveLen(1), "exactly enough namespace CPU capacity should allow the second pool instance")
+		})
+
 		It("reports AtCapacity when saturated with unmet demand, and CapacitySufficient once demand is relieved", func() {
 			pool := newVerifyPool("pool-atcapacity", 1, 0, 0)
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())

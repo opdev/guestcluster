@@ -491,7 +491,7 @@ func TestHCPAPIEndpointReportsExistingRouteHostnameConflict(t *testing.T) {
 	}
 	ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: domain}}
 	conflictingRoute := &routev1.Route{
-		ObjectMeta: metav1.ObjectMeta{Name: "other-api", Namespace: "other-namespace", Labels: map[string]string{resources.LabelManagedBy: resources.ManagerName, resources.LabelInstance: "other"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "other-api", Namespace: "other-namespace", Labels: map[string]string{resources.LabelManagedBy: resources.ManagerName, resources.LabelInstance: "other-instance"}},
 		Spec:       routev1.RouteSpec{Host: hostname},
 	}
 	c := newHyperShiftFakeClient(t, instance, hcpEndpointTestPullSecret(instance), ingress, conflictingRoute)

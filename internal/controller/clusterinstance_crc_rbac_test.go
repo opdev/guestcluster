@@ -23,9 +23,9 @@ func agentRBACInstance(name, namespace, uid string) *brokerv1alpha1.ClusterInsta
 
 func TestCRCAgentRBACReconcileAndCleanup(t *testing.T) {
 	ctx := context.Background()
-	a := agentRBACInstance("first", "tenant", "first-uid")
-	b := agentRBACInstance("second", "tenant", "second-uid")
-	otherNamespace := agentRBACInstance("first", "other", "other-uid")
+	a := agentRBACInstance("first", pullSecretTestNamespace, "first-uid")
+	b := agentRBACInstance("second", pullSecretTestNamespace, "second-uid")
+	otherNamespace := agentRBACInstance("first", otherTestNamespace, "other-uid")
 	c := newCRCRecoveryFakeClient(t, a, b, otherNamespace)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	for _, instance := range []*brokerv1alpha1.ClusterInstance{a, b, otherNamespace} {
@@ -132,7 +132,7 @@ func (c emptyCachedAgentJobList) List(ctx context.Context, list client.ObjectLis
 
 func TestTeardownCRCUsesLiveJobListBeforeRemovingRBAC(t *testing.T) {
 	ctx := context.Background()
-	instance := agentRBACInstance("active", "tenant", "uid")
+	instance := agentRBACInstance("active", pullSecretTestNamespace, "uid")
 	c := newCRCRecoveryFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: emptyCachedAgentJobList{c}, APIReader: c, Scheme: c.Scheme()}
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
@@ -160,7 +160,7 @@ func TestTeardownCRCUsesLiveJobListBeforeRemovingRBAC(t *testing.T) {
 
 func TestCRCAgentRBACRejectsRuleAndRoleRefDrift(t *testing.T) {
 	ctx := context.Background()
-	instance := agentRBACInstance("drift", "tenant", "uid")
+	instance := agentRBACInstance("drift", pullSecretTestNamespace, "uid")
 	c := newCRCRecoveryFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	if err := r.ensureCRCAgentRBAC(ctx, instance); err != nil {
@@ -193,8 +193,8 @@ func TestCRCAgentRBACRejectsRuleAndRoleRefDrift(t *testing.T) {
 
 func TestCRCAgentRBACRejectsOtherOwners(t *testing.T) {
 	ctx := context.Background()
-	instance := agentRBACInstance("name", "tenant", "new-uid")
-	old := agentRBACInstance("name", "tenant", "old-uid")
+	instance := agentRBACInstance("name", pullSecretTestNamespace, "new-uid")
+	old := agentRBACInstance("name", pullSecretTestNamespace, "old-uid")
 	c := newCRCRecoveryFakeClient(t, instance)
 	r := &ClusterInstanceReconciler{Client: c, Scheme: c.Scheme()}
 	if err := r.ensureCRCAgentRBAC(ctx, old); err != nil {

@@ -25,10 +25,14 @@ import (
 // literals) so the reconcile logic under test always sees identical fixture
 // data no matter which spec file constructs it.
 const (
-	testNamespace   = "default"
-	testOCPVersion  = "4.16.0"
-	testMemory      = "16Gi"
-	testTTLPoolName = "ttl-pool"
+	testNamespace      = "default"
+	testOCPVersion     = "4.16.0"
+	testMemory         = "16Gi"
+	testStorage        = "80Gi"
+	smallTestStorage   = "32Gi"
+	testPoolName       = "pool"
+	otherTestNamespace = "other"
+	testTTLPoolName    = "ttl-pool"
 )
 
 // allVerificationTopologies is the set of topologies the binding-model
@@ -61,7 +65,7 @@ func verificationTemplateFor(topology brokerv1alpha1.ClusterTopology) brokerv1al
 		return brokerv1alpha1.ClusterTemplate{
 			OCPVersion:   testOCPVersion,
 			ReleaseImage: "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64",
-			Memory:       "8Gi",
+			Memory:       statusHCPMemory,
 			Cores:        2,
 		}
 	default: // TopologyCRC

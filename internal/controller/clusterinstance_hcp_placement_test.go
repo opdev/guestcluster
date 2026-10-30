@@ -281,7 +281,7 @@ func TestHCPPlacementRejectsUnclaimedControlPlaneNamespace(t *testing.T) {
 }
 
 func TestHCPPlacementRejectsForeignHostedClusterNamespaceCollision(t *testing.T) {
-	instance := hcpEndpointTestInstance("a-b", "tenant")
+	instance := hcpEndpointTestInstance("a-b", pullSecretTestNamespace)
 	name := resources.HostedClusterName(instance.Name, instance.Namespace)
 	// A separately managed HostedCluster can still use an arbitrary name
 	// that produces the same control-plane namespace.
@@ -297,7 +297,7 @@ func TestHCPPlacementRejectsForeignHostedClusterNamespaceCollision(t *testing.T)
 
 func TestHCPPreviouslyCollidingInstancesReachReady(t *testing.T) {
 	ctx := context.Background()
-	instance := hcpEndpointTestInstance("a-b", "tenant")
+	instance := hcpEndpointTestInstance("a-b", pullSecretTestNamespace)
 	instance.UID = "allocated-instance"
 	ingress := &configv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: statusIngressName}, Spec: configv1.IngressSpec{Domain: statusIngressDomain}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: testManagementNodeName}, Status: corev1.NodeStatus{

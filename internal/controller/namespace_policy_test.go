@@ -165,7 +165,7 @@ func TestNamespaceWatchIncludesPreviouslyDisabledObjects(t *testing.T) {
 	pool := &brokerv1alpha1.ClusterPool{ObjectMeta: metav1.ObjectMeta{Name: policyTestPoolName, Namespace: ns.Name}}
 	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: policyTestInstanceName, Namespace: ns.Name}}
 	other := instance.DeepCopy()
-	other.Namespace = "other"
+	other.Namespace = otherTestNamespace
 	c := newStatusWriteFakeClient(t, ns, pool, instance, other)
 	for _, pools := range []bool{true, false} {
 		requests := namespaceRequests(context.Background(), c, ns, pools)

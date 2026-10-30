@@ -72,7 +72,8 @@ import (
 // mutates a lease itself; that responsibility belongs entirely to
 // ClusterLeaseReconciler. It also reports a CapacityAvailable status
 // condition that summarizes whether the floors are structurally reachable
-// given MaxSize, and whether the pool is currently saturated.
+// given MaxSize and namespace quotas, and whether the pool is currently
+// saturated.
 type ClusterPoolReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -231,6 +232,27 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		need = demandNeed
 	}
 	room := pool.Spec.MaxSize - total
+	var resourceQuotaViolation *namespaceResourceQuotaViolation
+	if need > 0 && room > 0 && !namespaceCapacity.atLimit() {
+		limits, err := namespaceClusterInstanceResourceLimits(quotaList)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading namespace Guestcluster resource limits: %w", err)
+		}
+		if len(limits) > 0 {
+			candidate := &brokerv1alpha1.ClusterInstance{
+				ObjectMeta: metav1.ObjectMeta{Namespace: pool.Namespace},
+				Spec: brokerv1alpha1.ClusterInstanceSpec{
+					Type:     pool.Spec.Type,
+					PoolRef:  corev1.LocalObjectReference{Name: pool.Name},
+					Template: pool.Spec.Template,
+				},
+			}
+			resourceQuotaViolation, err = namespaceClusterInstanceResourceViolation(allInstances.Items, limits, candidate)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("calculating namespace Guestcluster resource usage: %w", err)
+			}
+		}
+	}
 
 	log.V(1).Info("evaluated pool capacity",
 		"pool", pool.Name, "total", total, "available", available, "pending", pending, "terminating", terminating, "leasedCount", leasedCount,
@@ -243,48 +265,16 @@ func (r *ClusterPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// branches below return early, so whichever Status().Update fires
 	// carries it. See capacityCondition's doc for the three cases it
 	// distinguishes.
-	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand, namespaceCapacity))
+	apimeta.SetStatusCondition(&pool.Status.Conditions, capacityCondition(pool, need, room, pendingDemand, namespaceCapacity, resourceQuotaViolation))
 	if !policy.enabled {
 		// Keep capacity observations current without replacing or trimming
 		// existing clusters as a side effect of namespace opt-out.
 		return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
 	}
 
-	if need > 0 && room > 0 {
-		if namespaceCapacity.atLimit() {
-			log.Info("namespace ClusterInstance limit blocks pool capacity",
-				"pool", pool.Name, "namespace", pool.Namespace,
-				"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
-			return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
-		}
-		log.Info("creating ClusterInstance to satisfy pool capacity",
-			"pool", pool.Name, "total", total, "available", available, "pending", pending, "need", need, "room", room,
-			"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
-		if err := r.createInstance(ctx, pool, instanceList); err != nil {
-			if isClusterInstanceQuotaExceeded(err) {
-				log.Info("ResourceQuota rejected ClusterInstance creation",
-					"pool", pool.Name, "namespace", pool.Namespace,
-					"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
-				apimeta.SetStatusCondition(&pool.Status.Conditions, namespaceLimitCondition(pool.Generation, namespaceInstanceCapacity{}))
-				return ctrl.Result{RequeueAfter: requeueInterval}, r.updateStatusIfChanged(ctx, pool, previousStatus)
-			}
-			return ctrl.Result{}, fmt.Errorf("creating ClusterInstance for pool %s: %w", pool.Name, err)
-		}
-		// Reconcile does NOT requeue immediately here, because r.List()
-		// above reads from the manager's cached client, which syncs
-		// asynchronously via watch and is not guaranteed to observe the
-		// Create() that just happened. An immediate Requeue would race
-		// ahead of that cache sync: if the informer has not yet observed
-		// the new ClusterInstance by the next reconcile, Reconcile reads
-		// `total` as unchanged and need stays positive, causing a second
-		// (or more) instance to be over-created for a single floor
-		// deficit. SetupWithManager's Owns(ClusterInstance) watch already
-		// guarantees a fresh reconcile once the cache actually reflects the
-		// new instance, so no explicit Requeue is needed here.
-		if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+	if result, handled, err := r.scaleUpIfNeeded(ctx, pool, previousStatus, instanceList,
+		need, room, total, available, pending, namespaceCapacity, resourceQuotaViolation); handled {
+		return result, err
 	}
 
 	// Scale back down, one instance per reconcile (same thundering-herd
@@ -417,7 +407,7 @@ func computeInstanceAccounting(instanceList *brokerv1alpha1.ClusterInstanceList,
 
 // capacityCondition summarizes whether this pool can meet its floors and
 // demand within MaxSize and the namespace ClusterInstance limit.
-func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32, namespaceCapacity namespaceInstanceCapacity) metav1.Condition {
+func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDemand int32, namespaceCapacity namespaceInstanceCapacity, resourceQuotaViolation *namespaceResourceQuotaViolation) metav1.Condition {
 	switch {
 	case pool.Spec.MaxSize < pool.Spec.MinSize || pool.Spec.MaxSize < pool.Spec.WarmSpares:
 		// Structurally unreachable: MaxSize cannot accommodate the
@@ -451,6 +441,8 @@ func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDema
 				pool.Spec.MaxSize, need, pendingDemand),
 			ObservedGeneration: pool.Generation,
 		}
+	case need > 0 && resourceQuotaViolation != nil:
+		return namespaceResourceQuotaCondition(pool.Generation, resourceQuotaViolation)
 	default:
 		return metav1.Condition{
 			Type:               conditionTypeCapacityAvailable,
@@ -460,6 +452,59 @@ func capacityCondition(pool *brokerv1alpha1.ClusterPool, need, room, pendingDema
 			ObservedGeneration: pool.Generation,
 		}
 	}
+}
+
+// scaleUpIfNeeded creates at most one ClusterInstance when the pool has an
+// unmet deficit and room under MaxSize, applying the same
+// thundering-herd-avoidance policy described in Reconcile: at most one
+// instance per reconcile, so each Create() error stays individually
+// retryable. handled reports whether the caller should return result and err
+// immediately; when handled is false, there is no deficit or no room, and the
+// caller should continue with its own status update.
+func (r *ClusterPoolReconciler) scaleUpIfNeeded(ctx context.Context, pool *brokerv1alpha1.ClusterPool, previousStatus *brokerv1alpha1.ClusterPoolStatus, instanceList *brokerv1alpha1.ClusterInstanceList, need, room, total, available, pending int32, namespaceCapacity namespaceInstanceCapacity, resourceQuotaViolation *namespaceResourceQuotaViolation) (ctrl.Result, bool, error) {
+	log := logf.FromContext(ctx)
+
+	if need <= 0 || room <= 0 {
+		return ctrl.Result{}, false, nil
+	}
+	if namespaceCapacity.atLimit() {
+		log.Info("namespace ClusterInstance limit blocks pool capacity",
+			"pool", pool.Name, "namespace", pool.Namespace,
+			"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+		return ctrl.Result{RequeueAfter: requeueInterval}, true, r.updateStatusIfChanged(ctx, pool, previousStatus)
+	}
+	if resourceQuotaViolation != nil {
+		log.Info("namespace Guestcluster resource quota blocks pool capacity",
+			"pool", pool.Name, "namespace", pool.Namespace, "reason", resourceQuotaViolation.message())
+		return ctrl.Result{RequeueAfter: requeueInterval}, true, r.updateStatusIfChanged(ctx, pool, previousStatus)
+	}
+	log.Info("creating ClusterInstance to satisfy pool capacity",
+		"pool", pool.Name, "total", total, "available", available, "pending", pending, "need", need, "room", room,
+		"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+	if err := r.createInstance(ctx, pool, instanceList); err != nil {
+		if isClusterInstanceQuotaExceeded(err) {
+			log.Info("ResourceQuota rejected ClusterInstance creation",
+				"pool", pool.Name, "namespace", pool.Namespace,
+				"namespaceTotal", namespaceCapacity.total, "namespaceLimit", namespaceCapacity.limit)
+			apimeta.SetStatusCondition(&pool.Status.Conditions, namespaceLimitCondition(pool.Generation, namespaceInstanceCapacity{}))
+			return ctrl.Result{RequeueAfter: requeueInterval}, true, r.updateStatusIfChanged(ctx, pool, previousStatus)
+		}
+		return ctrl.Result{}, true, fmt.Errorf("creating ClusterInstance for pool %s: %w", pool.Name, err)
+	}
+	// Reconcile does NOT requeue immediately here, because r.List() reads
+	// from the manager's cached client, which syncs asynchronously via watch
+	// and is not guaranteed to observe the Create() that just happened. An
+	// immediate Requeue would race ahead of that cache sync: if the informer
+	// has not yet observed the new ClusterInstance by the next reconcile,
+	// Reconcile reads `total` as unchanged and need stays positive, causing a
+	// second (or more) instance to be over-created for a single floor
+	// deficit. SetupWithManager's Owns(ClusterInstance) watch already
+	// guarantees a fresh reconcile once the cache actually reflects the new
+	// instance, so no explicit Requeue is needed here.
+	if err := r.updateStatusIfChanged(ctx, pool, previousStatus); err != nil {
+		return ctrl.Result{}, true, err
+	}
+	return ctrl.Result{}, true, nil
 }
 
 // scaleDownExcess deletes at most one Ready, unclaimed ClusterInstance when

@@ -71,6 +71,54 @@ reason `NamespaceAtCapacity` reports the current count. Instance and quota
 changes wake pools in the namespace. The limit does not delete existing
 instances if an administrator lowers it below current use.
 
+## Set namespace guest-cluster resource limits
+
+The same `ResourceQuota` can set Guestcluster-specific CPU, memory, and storage
+budgets in addition to the count limit:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: guestcluster-budget
+  namespace: guestcluster-demo
+spec:
+  hard:
+    count/clusterinstances.guestcluster.opdev.io: "10"
+    requests.guestcluster.opdev.io/cpu: "32"
+    requests.guestcluster.opdev.io/memory: 128Gi
+    requests.guestcluster.opdev.io/storage: 1Ti
+```
+
+These extended-resource keys are a Guestcluster Operator budget. The operator
+sums allocations from ClusterInstances in this source namespace across every
+pool and standalone instance. It does not use `ResourceQuota.status.used`,
+standard `requests.cpu` / `requests.memory` / `requests.storage` quota usage, or
+resources consumed by unrelated workloads or other namespaces. For each
+dimension, the lowest hard limit across ResourceQuotas applies; an unset
+dimension has no limit. Every configured dimension must have room for the
+proposed instance, in addition to the count quota and the pool's `spec.maxSize`.
+An exact fit is allowed.
+
+CPU is `template.cores` per VM and memory is `template.memory` per VM. Storage
+uses `template.rootVolumeSize` per VM, defaulting to 80Gi for CRC and 32Gi for
+HCP. HCP estimates multiply worker CPU, memory, and root-volume requests by
+`template.nodePoolReplicas` (default 1); this budget does not include separate
+HyperShift control-plane overhead. Configure hard limits as whole CPU cores or
+whole bytes of memory/storage (Kubernetes quantity suffixes such as `Gi` and
+`Ti` are supported).
+
+Pool-created instances reserve resources as soon as they are created. A
+standalone instance reserves resources when the operator records its
+`status.provisioning` authorization. Failed and terminating instances continue
+to reserve their estimated allocation until deletion completes. An unstarted
+standalone object does not reserve resources while waiting for authorization.
+Lowering a limit does not delete existing instances or revoke an authorization
+already recorded. When a pool is blocked, `CapacityAvailable=False` with reason
+`NamespaceResourceQuotaExceeded` reports the exceeded dimension and amounts; a
+blocked standalone instance reports the same reason in its `Ready` condition.
+ResourceQuota changes wake pools and standalone instances in the namespace.
+
 Create input Secrets in the source namespace. `template.pullSecretRef` selects
 a local Secret; the default is `pull-secret`. Manual CRC inputs use
 `template.bundleSSHKeyRef`. Optional HCP worker SSH inputs use

@@ -32,10 +32,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -81,6 +83,7 @@ type ClusterInstanceReconciler struct {
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterinstances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=guestcluster.opdev.io,resources=clusterleases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=core,resources=resourcequotas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=list
@@ -763,6 +766,7 @@ func (r *ClusterInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			return namespaceRequests(ctx, r.Client, obj, false)
 		})).
+		Watches(&corev1.ResourceQuota{}, handler.EnqueueRequestsFromMapFunc(r.resourceQuotaRequests), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&brokerv1alpha1.ClusterLease{}, handler.EnqueueRequestsFromMapFunc(r.instanceForLease)).
 		Watches(&kubevirtv1.VirtualMachineInstance{}, handler.EnqueueRequestsFromMapFunc(r.instanceForVMI)).
 		Watches(&routev1.Route{}, handler.EnqueueRequestsFromMapFunc(r.instanceForRoute)).

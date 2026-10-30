@@ -48,7 +48,7 @@ const (
 )
 
 func agentDiagnosticFixture() (*brokerv1alpha1.ClusterInstance, *batchv1.Job, []client.Object) {
-	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "tenant", UID: crcTestInstanceUID}}
+	instance := &brokerv1alpha1.ClusterInstance{ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: pullSecretTestNamespace, UID: crcTestInstanceUID}}
 	job := resources.BuildCRCAgentJob(instance, "192.0.2.1", "vmi-uid", "ssh", crcTestBundleSSHKeyDataKey, "identity", "agent-image", "api.test", "pull")
 	account := resources.CRCAgentAccountName(instance.Name)
 	objects := []client.Object{
